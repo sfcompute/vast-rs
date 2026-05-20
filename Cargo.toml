@@ -1,0 +1,55 @@
+[package]
+name = "vast-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Rust client library for the VAST Data Management System REST API"
+license = "MIT OR Apache-2.0"
+keywords = ["vast", "storage", "api", "client"]
+categories = ["api-bindings", "network-programming"]
+
+[lib]
+name = "vast_rs"
+path = "src/lib.rs"
+
+[dependencies]
+# HTTP client — rustls so we have no native-tls dependency
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "gzip",
+] }
+
+# Async runtime
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+
+# Secret management — prevents tokens/passwords from appearing in logs/debug output
+secrecy = { version = "0.8", features = ["serde"] }
+
+# Observability
+tracing = "0.1"
+
+# URL handling
+url = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+# HTTP mocking for unit tests
+wiremock = "0.6"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde_json = "1"
+
+[features]
+# Enable against a real VAST cluster:
+#   VMS_ADDRESS=localhost:2443 VMS_TOKEN=<tok> cargo test --features integration
+integration = []
+
+[[example]]
+name = "list_clusters"
+path = "examples/list_clusters.rs"

@@ -1,0 +1,9 @@
+/target
+/.generated-scratch
+/api-spec/vast-openapi-v3.json
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target
