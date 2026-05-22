@@ -123,6 +123,28 @@ impl VastClient {
         -> Result<reqwest::Response>
     where Q: Serialize + ?Sized, B: Serialize + ?Sized,
     {
+        let resp = self.send_once(method.clone(), path, query, body).await?;
+
+        // The VMS gates all routes behind the auth middleware, so 401 is
+        // returned before any handler runs — retrying with a fresh JWT is
+        // safe (no risk of doubled side effects). Only refresh if the
+        // credentials can actually produce a new token; a static API
+        // token will just 401 again.
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+            && self.inner.auth.is_refreshable()
+        {
+            tracing::debug!("got 401 from VMS; refreshing cached JWT and retrying once");
+            self.invalidate_cached_token().await;
+            return self.send_once(method, path, query, body).await;
+        }
+
+        Ok(resp)
+    }
+
+    async fn send_once<Q, B>(&self, method: Method, path: &str, query: Option<&Q>, body: Option<&B>)
+        -> Result<reqwest::Response>
+    where Q: Serialize + ?Sized, B: Serialize + ?Sized,
+    {
         let token = self.bearer_token().await?;
         let url = self.inner.base.join(path)?;
         let mut rb = self.inner.http.request(method, url).bearer_auth(token);
@@ -138,6 +160,10 @@ impl VastClient {
         let t = self.inner.auth.bearer_token(&self.inner.http, &self.inner.base).await?;
         *self.inner.cached_token.write().await = Some(t.clone());
         Ok(t)
+    }
+
+    async fn invalidate_cached_token(&self) {
+        *self.inner.cached_token.write().await = None;
     }
 }
 

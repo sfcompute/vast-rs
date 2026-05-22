@@ -78,6 +78,60 @@ async fn tenant_admin_uses_path_scoped_token_endpoint() {
 }
 
 #[tokio::test]
+async fn jwt_401_triggers_refresh_and_retry() {
+    // A cached JWT can expire mid-process. Verify we invalidate the
+    // cache on a 401, re-exchange credentials, and retry the request
+    // exactly once with the new token.
+    let server = MockServer::start().await;
+
+    // wiremock prefers the most-recently-mounted mock when multiple
+    // match, so mount the "new" token response first and the "old"
+    // response second. The first call drains the "old" mock, the
+    // refresh consumes the "new" mock.
+    Mock::given(method("POST")).and(path("/api/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "new" })))
+        .up_to_n_times(1)
+        .expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "old" })))
+        .up_to_n_times(1)
+        .expect(1).mount(&server).await;
+
+    // First request carries the old token and gets 401; second carries
+    // the new token and succeeds. Distinct header matchers keep these
+    // unambiguous regardless of mount order.
+    Mock::given(method("GET")).and(path("/api/clusters/"))
+        .and(header("authorization", "Bearer old"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "expired"})))
+        .expect(1).mount(&server).await;
+    Mock::given(method("GET")).and(path("/api/clusters/"))
+        .and(header("authorization", "Bearer new"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1).mount(&server).await;
+
+    let client = setup_credentials(&server, "alice", "pw", None).await;
+    let clusters = client.clusters().list().await.unwrap();
+    assert!(clusters.is_empty());
+
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn static_token_does_not_retry_on_401() {
+    // Static API tokens don't expire mid-process, so retrying after a
+    // 401 would just double the failure count. Verify the client makes
+    // exactly one request and surfaces the 401 to the caller.
+    let (server, client) = setup("static").await;
+    Mock::given(method("GET")).and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "bad token"})))
+        .expect(1).mount(&server).await;
+
+    let err = client.clusters().list().await.unwrap_err();
+    assert!(err.is_unauthorized());
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn jwt_is_cached_across_calls() {
     let server = MockServer::start().await;
     Mock::given(method("POST")).and(path("/api/token/"))

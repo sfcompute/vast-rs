@@ -26,6 +26,14 @@ pub(crate) enum Auth {
 }
 
 impl Auth {
+    /// `true` when the cached bearer token could plausibly become valid
+    /// again by re-running the credential exchange — i.e. for password
+    /// auth, whose JWT expires. Static API tokens never expire mid-process
+    /// so retrying after a 401 is pointless.
+    pub(crate) fn is_refreshable(&self) -> bool {
+        matches!(self, Auth::Password { .. })
+    }
+
     /// Build from environment variables: `VMS_TOKEN`, or `VMS_USER` + `VMS_PASSWORD`
     /// (+ optional `VMS_TENANT`).
     pub(crate) fn from_env() -> Option<Self> {
