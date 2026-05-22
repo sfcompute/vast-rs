@@ -56,10 +56,21 @@ impl Auth {
             Auth::Token(t) => Ok(t.clone()),
             Auth::Password { username, password, tenant } => {
                 // Cluster admins POST /api/token/; tenant admins POST /api/token/{name}.
-                let url = base.join(&match tenant {
-                    Some(t) => format!("token/{t}"),
-                    None => "token/".into(),
-                })?;
+                // Tenant names may legally contain characters (`/`, ` `,
+                // `?`, `#`) that would otherwise break out of the path
+                // segment, so use `path_segments_mut().push()` to do the
+                // percent-encoding rather than `format!`.
+                let url = match tenant {
+                    Some(t) => {
+                        let mut u = base.join("token/")?;
+                        u.path_segments_mut()
+                            .map_err(|()| Error::Auth("base URL has no path segments".into()))?
+                            .pop_if_empty()
+                            .push(t);
+                        u
+                    }
+                    None => base.join("token/")?,
+                };
                 let resp = http
                     .post(url)
                     .json(&TokenRequest { username, password: password.expose_secret() })

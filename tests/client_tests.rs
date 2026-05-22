@@ -64,6 +64,26 @@ async fn credentials_post_to_token_endpoint() {
 }
 
 #[tokio::test]
+async fn tenant_name_is_url_encoded_in_token_path() {
+    // Tenant names can legally contain `/`, spaces, etc. — encoding
+    // them as a single path segment prevents the slash from creating
+    // an extra path level (which would route to a different endpoint
+    // or 404 on the VMS).
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/token/acme%2Fadmin"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "jwt" })))
+        .expect(1).mount(&server).await;
+    Mock::given(method("GET")).and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server).await;
+
+    setup_credentials(&server, "alice", "pw", Some("acme/admin")).await
+        .clusters().list().await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn tenant_admin_uses_path_scoped_token_endpoint() {
     let server = MockServer::start().await;
     Mock::given(method("POST")).and(path("/api/token/acme"))
