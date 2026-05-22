@@ -32,8 +32,8 @@
 use std::env;
 
 use vast_rs::{
-    api::{CreateQuota, CreateTenant, CreateView, CreateViewPolicy, CreateVipPool},
     VastClient,
+    api::{CreateQuota, CreateTenant, CreateView, CreateViewPolicy, CreateVipPool},
 };
 
 // ---------------------------------------------------------------------------
@@ -70,10 +70,9 @@ fn build_client() -> VastClient {
     if let Ok(token) = env::var("VMS_TOKEN") {
         builder = builder.token(token);
     } else {
-        let user = env::var("VMS_USER")
-            .expect("either VMS_TOKEN or VMS_USER/VMS_PASSWORD must be set");
-        let pass = env::var("VMS_PASSWORD")
-            .expect("VMS_PASSWORD must be set when using VMS_USER");
+        let user =
+            env::var("VMS_USER").expect("either VMS_TOKEN or VMS_USER/VMS_PASSWORD must be set");
+        let pass = env::var("VMS_PASSWORD").expect("VMS_PASSWORD must be set when using VMS_USER");
         builder = builder.credentials(user, pass);
 
         if let Ok(tenant) = env::var("VMS_TENANT") {
@@ -81,7 +80,9 @@ fn build_client() -> VastClient {
         }
     }
 
-    builder.build().expect("failed to build VastClient from env")
+    builder
+        .build()
+        .expect("failed to build VastClient from env")
 }
 
 // ---------------------------------------------------------------------------
@@ -186,10 +187,20 @@ async fn view_policies_crud() {
         .await
         .expect("view_policies().update() failed");
     // `nfs_no_squash` isn't on the slim ViewPolicy model — look it up in `.extra`.
-    let no_squash = updated.extra.get("nfs_no_squash").and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str()).any(|s| s == "10.0.0.0/8"))
+    let no_squash = updated
+        .extra
+        .get("nfs_no_squash")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .any(|s| s == "10.0.0.0/8")
+        })
         .unwrap_or(false);
-    assert!(no_squash, "nfs_no_squash should contain 10.0.0.0/8 after update");
+    assert!(
+        no_squash,
+        "nfs_no_squash should contain 10.0.0.0/8 after update"
+    );
 
     // DELETE — clean up
     client
@@ -402,7 +413,11 @@ async fn quotas_crud() {
     let quota_id = quota.id;
 
     // LIST
-    let quotas = client.quotas().list().await.expect("quotas().list() failed");
+    let quotas = client
+        .quotas()
+        .list()
+        .await
+        .expect("quotas().list() failed");
     assert!(
         quotas.iter().any(|q| q.id == quota_id),
         "newly created quota not found in list"
@@ -524,10 +539,7 @@ async fn vip_pools_crud() {
         )
         .await
         .expect("vip_pools().update() failed");
-    assert_eq!(
-        updated.end_ip, "192.168.254.20",
-        "end_ip should be updated"
-    );
+    assert_eq!(updated.end_ip, "192.168.254.20", "end_ip should be updated");
 
     // DELETE
     client
@@ -597,7 +609,10 @@ async fn tenants_crud() {
         .update(tenant_id, &UpdateTenant::default())
         .await
         .expect("tenants().update() failed");
-    assert_eq!(updated.id, tenant_id, "update response should echo the tenant id");
+    assert_eq!(
+        updated.id, tenant_id,
+        "update response should echo the tenant id"
+    );
 
     // DELETE
     client

@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::{client::VastClient, Result};
+use crate::{Result, client::VastClient};
 
 /// Catch-all for fields not modeled explicitly.
 pub type Extra = Map<String, Value>;
@@ -27,7 +27,9 @@ pub type Extra = Map<String, Value>;
 /// field that the VMS might return as `null` (e.g. text fields populated only
 /// after cluster bootstrap).
 fn null_default<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
-where D: serde::Deserializer<'de>, T: Default + Deserialize<'de>,
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
 {
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
@@ -41,7 +43,9 @@ macro_rules! crud {
     ($Handle:ident, $Resource:ty, $Create:ty, $Update:ty, $path:expr) => {
         pub struct $Handle<'c>(pub(crate) &'c VastClient);
         impl<'c> $Handle<'c> {
-            pub async fn list(&self) -> Result<Vec<$Resource>> { self.0.get($path).await }
+            pub async fn list(&self) -> Result<Vec<$Resource>> {
+                self.0.get($path).await
+            }
             pub async fn get(&self, id: u64) -> Result<$Resource> {
                 self.0.get(&format!("{}{id}/", $path)).await
             }
@@ -60,7 +64,9 @@ macro_rules! crud {
     (cd $Handle:ident, $Resource:ty, $Create:ty, $path:expr) => {
         pub struct $Handle<'c>(pub(crate) &'c VastClient);
         impl<'c> $Handle<'c> {
-            pub async fn list(&self) -> Result<Vec<$Resource>> { self.0.get($path).await }
+            pub async fn list(&self) -> Result<Vec<$Resource>> {
+                self.0.get($path).await
+            }
             pub async fn get(&self, id: u64) -> Result<$Resource> {
                 self.0.get(&format!("{}{id}/", $path)).await
             }
@@ -82,10 +88,14 @@ macro_rules! crud {
 #[serde(default)]
 pub struct Cluster {
     pub id: u64,
-    #[serde(deserialize_with = "null_default")] pub guid: String,
-    #[serde(deserialize_with = "null_default")] pub name: String,
-    #[serde(deserialize_with = "null_default")] pub state: String,
-    #[serde(deserialize_with = "null_default")] pub sw_version: String,
+    #[serde(deserialize_with = "null_default")]
+    pub guid: String,
+    #[serde(deserialize_with = "null_default")]
+    pub name: String,
+    #[serde(deserialize_with = "null_default")]
+    pub state: String,
+    #[serde(deserialize_with = "null_default")]
+    pub sw_version: String,
     pub enabled: bool,
     #[serde(flatten)]
     pub extra: Extra,
@@ -93,17 +103,28 @@ pub struct Cluster {
 
 pub struct Clusters<'c>(pub(crate) &'c VastClient);
 impl<'c> Clusters<'c> {
-    pub async fn list(&self) -> Result<Vec<Cluster>> { self.0.get("clusters/").await }
+    pub async fn list(&self) -> Result<Vec<Cluster>> {
+        self.0.get("clusters/").await
+    }
     pub async fn get(&self, id: u64) -> Result<Cluster> {
         self.0.get(&format!("clusters/{id}/")).await
     }
     /// Permanently delete a filesystem directory from the VAST namespace.
     /// `DELETE /api/clusters/{cluster_id}/delete_folder/` — requires the
     /// "Trash Folder Access" cluster setting.
-    pub async fn delete_folder(&self, cluster_id: u64, path: &str, tenant_id: Option<u64>) -> Result<()> {
+    pub async fn delete_folder(
+        &self,
+        cluster_id: u64,
+        path: &str,
+        tenant_id: Option<u64>,
+    ) -> Result<()> {
         let mut body = serde_json::json!({ "path": path });
-        if let Some(t) = tenant_id { body["tenant_id"] = serde_json::json!(t); }
-        self.0.delete_with_body(&format!("clusters/{cluster_id}/delete_folder/"), &body).await
+        if let Some(t) = tenant_id {
+            body["tenant_id"] = serde_json::json!(t);
+        }
+        self.0
+            .delete_with_body(&format!("clusters/{cluster_id}/delete_folder/"), &body)
+            .await
     }
 }
 
@@ -133,7 +154,9 @@ pub struct ListNodesParams {
 
 pub struct Nodes<'c>(pub(crate) &'c VastClient);
 impl<'c> Nodes<'c> {
-    pub async fn list(&self) -> Result<Vec<Node>> { self.0.get("nodes/").await }
+    pub async fn list(&self) -> Result<Vec<Node>> {
+        self.0.get("nodes/").await
+    }
     pub async fn list_with_params(&self, params: &ListNodesParams) -> Result<Vec<Node>> {
         self.0.get_with_query("nodes/", params).await
     }
@@ -162,16 +185,22 @@ pub struct User {
 #[derive(Debug, Serialize)]
 pub struct CreateUser {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")] pub uid: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct UpdateUser {
-    #[serde(skip_serializing_if = "Option::is_none")] pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 crud!(Users, User, CreateUser, UpdateUser, "users/");
@@ -196,25 +225,33 @@ pub struct Volume {
 pub struct CreateVolume {
     pub name: String,
     pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")] pub quota: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct UpdateVolume {
-    #[serde(skip_serializing_if = "Option::is_none")] pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub quota: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct ListVolumesParams {
-    #[serde(skip_serializing_if = "Option::is_none")] pub path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub is_snapshot: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_snapshot: Option<bool>,
 }
 
 pub struct Volumes<'c>(pub(crate) &'c VastClient);
 impl<'c> Volumes<'c> {
-    pub async fn list(&self) -> Result<Vec<Volume>> { self.0.get("volumes/").await }
+    pub async fn list(&self) -> Result<Vec<Volume>> {
+        self.0.get("volumes/").await
+    }
     pub async fn list_with_params(&self, p: &ListVolumesParams) -> Result<Vec<Volume>> {
         self.0.get_with_query("volumes/", p).await
     }
@@ -259,23 +296,36 @@ pub struct CreateView {
     pub policy_id: u64,
     pub protocols: Vec<String>,
     /// If `true`, create the backing directory and any missing parents.
-    #[serde(skip_serializing_if = "Option::is_none")] pub create_dir: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub alias: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub bucket: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub allow_anonymous_access: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub s3_versioning: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub s3_locks: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub s3_locks_retention_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub create_dir: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_anonymous_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_versioning: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_locks: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_locks_retention_mode: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct UpdateView {
-    #[serde(skip_serializing_if = "Option::is_none")] pub policy_id: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub protocols: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub alias: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub allow_anonymous_access: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub s3_versioning: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocols: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_anonymous_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_versioning: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 crud!(Views, View, CreateView, UpdateView, "views/");
@@ -299,32 +349,57 @@ pub struct ViewPolicy {
 #[derive(Debug, Serialize)]
 pub struct CreateViewPolicy {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")] pub auth_source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub flavor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub smb_file_mode: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub smb_directory_mode: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub nfs_posix_acl: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub nfs_root_squash: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub nfs_all_squash: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub nfs_no_squash: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub read_write: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub read_only: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flavor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smb_file_mode: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smb_directory_mode: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nfs_posix_acl: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nfs_root_squash: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nfs_all_squash: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nfs_no_squash: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_write: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct UpdateViewPolicy {
-    #[serde(skip_serializing_if = "Option::is_none")] pub smb_file_mode: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub smb_directory_mode: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub nfs_posix_acl: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub nfs_root_squash: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub nfs_all_squash: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub nfs_no_squash: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub read_write: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub read_only: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub auth_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smb_file_mode: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smb_directory_mode: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nfs_posix_acl: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nfs_root_squash: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nfs_all_squash: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nfs_no_squash: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_write: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_source: Option<String>,
 }
 
-crud!(ViewPolicies, ViewPolicy, CreateViewPolicy, UpdateViewPolicy, "viewpolicies/");
+crud!(
+    ViewPolicies,
+    ViewPolicy,
+    CreateViewPolicy,
+    UpdateViewPolicy,
+    "viewpolicies/"
+);
 
 // ===========================================================================
 // Quotas
@@ -349,19 +424,28 @@ pub struct Quota {
 pub struct CreateQuota {
     pub name: String,
     pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hard_limit: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub soft_limit: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hard_limit_inodes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub soft_limit_inodes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hard_limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soft_limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hard_limit_inodes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soft_limit_inodes: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct UpdateQuota {
-    #[serde(skip_serializing_if = "Option::is_none")] pub hard_limit: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub soft_limit: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hard_limit_inodes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub soft_limit_inodes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub enable_alarms: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hard_limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soft_limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hard_limit_inodes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soft_limit_inodes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_alarms: Option<bool>,
 }
 
 crud!(Quotas, Quota, CreateQuota, UpdateQuota, "quotas/");
@@ -392,23 +476,36 @@ pub struct CreateVipPool {
     pub end_ip: String,
     pub gw_ip: String,
     pub subnet_cidr: u32,
-    #[serde(skip_serializing_if = "Option::is_none")] pub vlan: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub cnode_ids: Option<Vec<u64>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub domain_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub tenant_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlan: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cnode_ids: Option<Vec<u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct UpdateVipPool {
-    #[serde(skip_serializing_if = "Option::is_none")] pub start_ip: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub end_ip: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub gw_ip: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub subnet_cidr: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub vlan: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub cnode_ids: Option<Vec<u64>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub domain_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gw_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subnet_cidr: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlan: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cnode_ids: Option<Vec<u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 crud!(VipPools, VipPool, CreateVipPool, UpdateVipPool, "vippools/");
@@ -433,15 +530,20 @@ pub struct Tenant {
 #[derive(Debug, Serialize)]
 pub struct CreateTenant {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")] pub vms_root_no_tenant_access: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub s3_root_no_tenant_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vms_root_no_tenant_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_root_no_tenant_access: Option<bool>,
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct UpdateTenant {
-    #[serde(skip_serializing_if = "Option::is_none")] pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub vms_root_no_tenant_access: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub s3_root_no_tenant_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vms_root_no_tenant_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_root_no_tenant_access: Option<bool>,
 }
 
 crud!(Tenants, Tenant, CreateTenant, UpdateTenant, "tenants/");
@@ -469,10 +571,17 @@ pub struct CreateSnapshot {
 
 #[derive(Debug, Default, Serialize)]
 pub struct UpdateSnapshot {
-    #[serde(skip_serializing_if = "Option::is_none")] pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
-crud!(Snapshots, Snapshot, CreateSnapshot, UpdateSnapshot, "snapshots/");
+crud!(
+    Snapshots,
+    Snapshot,
+    CreateSnapshot,
+    UpdateSnapshot,
+    "snapshots/"
+);
 
 // ===========================================================================
 // Protection policies
@@ -489,14 +598,23 @@ pub struct ProtectionPolicy {
 }
 
 #[derive(Debug, Serialize)]
-pub struct CreateProtectionPolicy { pub name: String }
+pub struct CreateProtectionPolicy {
+    pub name: String,
+}
 
 #[derive(Debug, Default, Serialize)]
 pub struct UpdateProtectionPolicy {
-    #[serde(skip_serializing_if = "Option::is_none")] pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
-crud!(ProtectionPolicies, ProtectionPolicy, CreateProtectionPolicy, UpdateProtectionPolicy, "protectionpolicies/");
+crud!(
+    ProtectionPolicies,
+    ProtectionPolicy,
+    CreateProtectionPolicy,
+    UpdateProtectionPolicy,
+    "protectionpolicies/"
+);
 
 // ===========================================================================
 // Folders
@@ -517,7 +635,8 @@ pub struct Folder {
 pub struct CreateFolder {
     pub path: String,
     /// Create intermediate parent directories as needed (`mkdir -p`).
-    #[serde(skip_serializing_if = "Option::is_none")] pub create_dirs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub create_dirs: Option<bool>,
 }
 
 crud!(cd Folders, Folder, CreateFolder, "folders/");

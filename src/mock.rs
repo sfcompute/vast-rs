@@ -28,7 +28,7 @@
 // than threading `Result` through every helper.
 #![allow(clippy::expect_used)]
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use wiremock::matchers::{method as wm_method, path as wm_path};
 use wiremock::{Mock, MockServer, ResponseTemplate, Times};
 
@@ -133,7 +133,8 @@ impl MockVastClient {
     /// Stub `<method> <path>` → `status` with a VMS-style `{"detail": detail}`
     /// body. Compatible with `Error::is_not_found` / `is_unauthorized`.
     pub async fn stub_error(&self, method: &str, path: &str, status: u16, detail: &str) {
-        self.mount(method, path, status, json!({ "detail": detail }), None).await;
+        self.mount(method, path, status, json!({ "detail": detail }), None)
+            .await;
     }
 
     /// Stub with a call-count expectation. `times` accepts a `u64` (exact) or
@@ -146,10 +147,18 @@ impl MockVastClient {
         body: Value,
         times: impl Into<Times>,
     ) {
-        self.mount(method, path, status, body, Some(times.into())).await;
+        self.mount(method, path, status, body, Some(times.into()))
+            .await;
     }
 
-    async fn mount(&self, method: &str, path: &str, status: u16, body: Value, times: Option<Times>) {
+    async fn mount(
+        &self,
+        method: &str,
+        path: &str,
+        status: u16,
+        body: Value,
+        times: Option<Times>,
+    ) {
         let resp = if body.is_null() {
             ResponseTemplate::new(status)
         } else {

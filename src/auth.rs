@@ -43,7 +43,11 @@ impl Auth {
         let username = std::env::var("VMS_USER").ok()?;
         let password = SecretString::new(std::env::var("VMS_PASSWORD").ok()?);
         let tenant = std::env::var("VMS_TENANT").ok();
-        Some(Auth::Password { username, password, tenant })
+        Some(Auth::Password {
+            username,
+            password,
+            tenant,
+        })
     }
 
     /// Return a valid bearer token, fetching a JWT for password auth if needed.
@@ -51,10 +55,18 @@ impl Auth {
     /// The token is wrapped in [`SecretString`] so it can't accidentally
     /// flow into `Debug` or tracing output; only call `.expose_secret()`
     /// at the immediate HTTP call site.
-    pub(crate) async fn bearer_token(&self, http: &reqwest::Client, base: &Url) -> Result<SecretString> {
+    pub(crate) async fn bearer_token(
+        &self,
+        http: &reqwest::Client,
+        base: &Url,
+    ) -> Result<SecretString> {
         match self {
             Auth::Token(t) => Ok(t.clone()),
-            Auth::Password { username, password, tenant } => {
+            Auth::Password {
+                username,
+                password,
+                tenant,
+            } => {
                 // Cluster admins POST /api/token/; tenant admins POST /api/token/{name}.
                 // Tenant names may legally contain characters (`/`, ` `,
                 // `?`, `#`) that would otherwise break out of the path
@@ -73,7 +85,10 @@ impl Auth {
                 };
                 let resp = http
                     .post(url)
-                    .json(&TokenRequest { username, password: password.expose_secret() })
+                    .json(&TokenRequest {
+                        username,
+                        password: password.expose_secret(),
+                    })
                     .send()
                     .await?;
                 if !resp.status().is_success() {
@@ -81,17 +96,28 @@ impl Auth {
                     let body = resp.text().await.unwrap_or_default();
                     let hint = if status == 401 && tenant.is_none() {
                         " (tenant-admin accounts must set .tenant(\"…\") or VMS_TENANT)"
-                    } else { "" };
-                    return Err(Error::Auth(format!("token request failed ({status}): {body}{hint}")));
+                    } else {
+                        ""
+                    };
+                    return Err(Error::Auth(format!(
+                        "token request failed ({status}): {body}{hint}"
+                    )));
                 }
-                Ok(SecretString::new(resp.json::<TokenResponse>().await?.access))
+                Ok(SecretString::new(
+                    resp.json::<TokenResponse>().await?.access,
+                ))
             }
         }
     }
 }
 
 #[derive(Serialize)]
-struct TokenRequest<'a> { username: &'a str, password: &'a str }
+struct TokenRequest<'a> {
+    username: &'a str,
+    password: &'a str,
+}
 
 #[derive(Deserialize)]
-struct TokenResponse { access: String }
+struct TokenResponse {
+    access: String,
+}

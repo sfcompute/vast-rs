@@ -3,9 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::{header, Method};
+use reqwest::{Method, header};
 use secrecy::{ExposeSecret, SecretString};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::RwLock;
 use url::Url;
 
@@ -49,29 +49,53 @@ impl VastClient {
     // -- API namespaces --------------------------------------------------------
 
     /// `/api/clusters/`
-    pub fn clusters(&self) -> api::Clusters<'_> { api::Clusters(self) }
+    pub fn clusters(&self) -> api::Clusters<'_> {
+        api::Clusters(self)
+    }
     /// `/api/folders/`
-    pub fn folders(&self) -> api::Folders<'_> { api::Folders(self) }
+    pub fn folders(&self) -> api::Folders<'_> {
+        api::Folders(self)
+    }
     /// `/api/nodes/`
-    pub fn nodes(&self) -> api::Nodes<'_> { api::Nodes(self) }
+    pub fn nodes(&self) -> api::Nodes<'_> {
+        api::Nodes(self)
+    }
     /// `/api/users/`
-    pub fn users(&self) -> api::Users<'_> { api::Users(self) }
+    pub fn users(&self) -> api::Users<'_> {
+        api::Users(self)
+    }
     /// `/api/volumes/`
-    pub fn volumes(&self) -> api::Volumes<'_> { api::Volumes(self) }
+    pub fn volumes(&self) -> api::Volumes<'_> {
+        api::Volumes(self)
+    }
     /// `/api/views/`
-    pub fn views(&self) -> api::Views<'_> { api::Views(self) }
+    pub fn views(&self) -> api::Views<'_> {
+        api::Views(self)
+    }
     /// `/api/viewpolicies/`
-    pub fn view_policies(&self) -> api::ViewPolicies<'_> { api::ViewPolicies(self) }
+    pub fn view_policies(&self) -> api::ViewPolicies<'_> {
+        api::ViewPolicies(self)
+    }
     /// `/api/quotas/`
-    pub fn quotas(&self) -> api::Quotas<'_> { api::Quotas(self) }
+    pub fn quotas(&self) -> api::Quotas<'_> {
+        api::Quotas(self)
+    }
     /// `/api/vippools/`
-    pub fn vip_pools(&self) -> api::VipPools<'_> { api::VipPools(self) }
+    pub fn vip_pools(&self) -> api::VipPools<'_> {
+        api::VipPools(self)
+    }
     /// `/api/snapshots/`
-    pub fn snapshots(&self) -> api::Snapshots<'_> { api::Snapshots(self) }
+    pub fn snapshots(&self) -> api::Snapshots<'_> {
+        api::Snapshots(self)
+    }
     /// `/api/tenants/`
-    pub fn tenants(&self) -> api::Tenants<'_> { api::Tenants(self) }
+    pub fn tenants(&self) -> api::Tenants<'_> {
+        api::Tenants(self)
+    }
     /// `/api/protectionpolicies/`
-    pub fn protection_policies(&self) -> api::ProtectionPolicies<'_> { api::ProtectionPolicies(self) }
+    pub fn protection_policies(&self) -> api::ProtectionPolicies<'_> {
+        api::ProtectionPolicies(self)
+    }
 
     // -- HTTP plumbing (used by api::*) ---------------------------------------
 
@@ -80,21 +104,28 @@ impl VastClient {
     }
 
     pub(crate) async fn get_with_query<T: DeserializeOwned, Q: Serialize + ?Sized>(
-        &self, path: &str, query: &Q,
+        &self,
+        path: &str,
+        query: &Q,
     ) -> Result<T> {
         self.send(Method::GET, path, Some(query), None::<&()>).await
     }
 
     pub(crate) async fn post<T: DeserializeOwned, B: Serialize + ?Sized>(
-        &self, path: &str, body: &B,
+        &self,
+        path: &str,
+        body: &B,
     ) -> Result<T> {
         self.send(Method::POST, path, None::<&()>, Some(body)).await
     }
 
     pub(crate) async fn patch<T: DeserializeOwned, B: Serialize + ?Sized>(
-        &self, path: &str, body: &B,
+        &self,
+        path: &str,
+        body: &B,
     ) -> Result<T> {
-        self.send(Method::PATCH, path, None::<&()>, Some(body)).await
+        self.send(Method::PATCH, path, None::<&()>, Some(body))
+            .await
     }
 
     pub(crate) async fn delete(&self, path: &str) -> Result<()> {
@@ -102,31 +133,56 @@ impl VastClient {
     }
 
     pub(crate) async fn delete_with_body<B: Serialize + ?Sized>(
-        &self, path: &str, body: &B,
+        &self,
+        path: &str,
+        body: &B,
     ) -> Result<()> {
         self.send_no_body(Method::DELETE, path, Some(body)).await
     }
 
-    async fn send<T, Q, B>(&self, method: Method, path: &str, query: Option<&Q>, body: Option<&B>) -> Result<T>
-    where T: DeserializeOwned, Q: Serialize + ?Sized, B: Serialize + ?Sized,
+    async fn send<T, Q, B>(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<&Q>,
+        body: Option<&B>,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned,
+        Q: Serialize + ?Sized,
+        B: Serialize + ?Sized,
     {
         let resp = self.request(method, path, query, body).await?;
         let status = resp.status();
-        if status.is_success() { Ok(resp.json().await?) }
-        else { Err(api_error(status.as_u16(), resp).await) }
+        if status.is_success() {
+            Ok(resp.json().await?)
+        } else {
+            Err(api_error(status.as_u16(), resp).await)
+        }
     }
 
     async fn send_no_body<B>(&self, method: Method, path: &str, body: Option<&B>) -> Result<()>
-    where B: Serialize + ?Sized,
+    where
+        B: Serialize + ?Sized,
     {
         let resp = self.request(method, path, None::<&()>, body).await?;
-        if resp.status().is_success() { Ok(()) }
-        else { Err(api_error(resp.status().as_u16(), resp).await) }
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(api_error(resp.status().as_u16(), resp).await)
+        }
     }
 
-    async fn request<Q, B>(&self, method: Method, path: &str, query: Option<&Q>, body: Option<&B>)
-        -> Result<reqwest::Response>
-    where Q: Serialize + ?Sized, B: Serialize + ?Sized,
+    async fn request<Q, B>(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<&Q>,
+        body: Option<&B>,
+    ) -> Result<reqwest::Response>
+    where
+        Q: Serialize + ?Sized,
+        B: Serialize + ?Sized,
     {
         let resp = self.send_once(method.clone(), path, query, body).await?;
 
@@ -135,9 +191,7 @@ impl VastClient {
         // safe (no risk of doubled side effects). Only refresh if the
         // credentials can actually produce a new token; a static API
         // token will just 401 again.
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED
-            && self.inner.auth.is_refreshable()
-        {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.inner.auth.is_refreshable() {
             tracing::debug!("got 401 from VMS; refreshing cached JWT and retrying once");
             self.invalidate_cached_token().await;
             return self.send_once(method, path, query, body).await;
@@ -157,18 +211,33 @@ impl VastClient {
         ),
         err,
     )]
-    async fn send_once<Q, B>(&self, method: Method, path: &str, query: Option<&Q>, body: Option<&B>)
-        -> Result<reqwest::Response>
-    where Q: Serialize + ?Sized, B: Serialize + ?Sized,
+    async fn send_once<Q, B>(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<&Q>,
+        body: Option<&B>,
+    ) -> Result<reqwest::Response>
+    where
+        Q: Serialize + ?Sized,
+        B: Serialize + ?Sized,
     {
         let token = self.bearer_token().await?;
         let url = self.inner.base.join(path)?;
         // Expose the secret only at the wire boundary. `bearer_auth`
         // marks the resulting `Authorization` header as sensitive, so
         // reqwest's tracing won't log it.
-        let mut rb = self.inner.http.request(method, url).bearer_auth(token.expose_secret());
-        if let Some(q) = query { rb = rb.query(q); }
-        if let Some(b) = body  { rb = rb.json(b); }
+        let mut rb = self
+            .inner
+            .http
+            .request(method, url)
+            .bearer_auth(token.expose_secret());
+        if let Some(q) = query {
+            rb = rb.query(q);
+        }
+        if let Some(b) = body {
+            rb = rb.json(b);
+        }
 
         let start = std::time::Instant::now();
         let resp = rb.send().await?;
@@ -196,7 +265,11 @@ impl VastClient {
             return Ok(t.clone());
         }
         tracing::debug!("performing credential exchange against VMS token endpoint");
-        let fetched = self.inner.auth.bearer_token(&self.inner.http, &self.inner.base).await?;
+        let fetched = self
+            .inner
+            .auth
+            .bearer_token(&self.inner.http, &self.inner.base)
+            .await?;
         *guard = Some(fetched.clone());
         Ok(fetched)
     }
@@ -265,12 +338,14 @@ impl Builder {
     /// VMS hostname or IP (the `https://` scheme and `/api/` base path are
     /// added automatically if absent). Required.
     pub fn address(mut self, address: impl Into<String>) -> Self {
-        self.address = Some(address.into()); self
+        self.address = Some(address.into());
+        self
     }
 
     /// Authenticate with a long-lived API token (recommended for automation).
     pub fn token(mut self, token: impl Into<String>) -> Self {
-        self.auth = Some(Auth::Token(SecretString::new(token.into()))); self
+        self.auth = Some(Auth::Token(SecretString::new(token.into())));
+        self
     }
 
     /// Authenticate with a username/password pair. For tenant admins also call
@@ -287,17 +362,20 @@ impl Builder {
     /// Tenant name for tenant-admin credential auth. Without this, the VMS
     /// returns 401 for tenant-scoped users.
     pub fn tenant(mut self, tenant: impl Into<String>) -> Self {
-        self.tenant = Some(tenant.into()); self
+        self.tenant = Some(tenant.into());
+        self
     }
 
     /// Accept self-signed / invalid TLS certificates. **Development only.**
     pub fn danger_accept_invalid_certs(mut self, yes: bool) -> Self {
-        self.accept_invalid_certs = yes; self
+        self.accept_invalid_certs = yes;
+        self
     }
 
     /// Per-request timeout (default: 30 seconds).
     pub fn timeout(mut self, t: Duration) -> Self {
-        self.timeout = Some(t); self
+        self.timeout = Some(t);
+        self
     }
 
     /// Build from environment variables: `VMS_ADDRESS` plus either `VMS_TOKEN`
@@ -307,17 +385,29 @@ impl Builder {
             .map_err(|_| Error::Config("VMS_ADDRESS must be set".into()))?;
         let auth = Auth::from_env()
             .ok_or_else(|| Error::Config("set VMS_TOKEN or VMS_USER + VMS_PASSWORD".into()))?;
-        Ok(Self { address: Some(address), auth: Some(auth), ..Default::default() })
+        Ok(Self {
+            address: Some(address),
+            auth: Some(auth),
+            ..Default::default()
+        })
     }
 
     /// Consume the builder and produce a [`VastClient`].
     pub fn build(self) -> Result<VastClient> {
-        let address = self.address.ok_or_else(|| Error::Config("address is required".into()))?;
+        let address = self
+            .address
+            .ok_or_else(|| Error::Config("address is required".into()))?;
         let auth = match self.auth {
             None => return Err(Error::Config("call .token() or .credentials()".into())),
-            Some(Auth::Password { username, password, tenant }) => {
-                Auth::Password { username, password, tenant: self.tenant.or(tenant) }
-            }
+            Some(Auth::Password {
+                username,
+                password,
+                tenant,
+            }) => Auth::Password {
+                username,
+                password,
+                tenant: self.tenant.or(tenant),
+            },
             Some(other) => {
                 if self.tenant.is_some() {
                     tracing::warn!(".tenant() has no effect with token auth");
@@ -332,14 +422,25 @@ impl Builder {
             .danger_accept_invalid_certs(self.accept_invalid_certs)
             .default_headers({
                 let mut h = header::HeaderMap::new();
-                h.insert(header::ACCEPT, header::HeaderValue::from_static("application/json"));
-                h.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/json"));
+                h.insert(
+                    header::ACCEPT,
+                    header::HeaderValue::from_static("application/json"),
+                );
+                h.insert(
+                    header::CONTENT_TYPE,
+                    header::HeaderValue::from_static("application/json"),
+                );
                 h
             })
             .build()?;
 
         Ok(VastClient {
-            inner: Arc::new(Inner { http, base, auth, cached_token: RwLock::new(None) }),
+            inner: Arc::new(Inner {
+                http,
+                base,
+                auth,
+                cached_token: RwLock::new(None),
+            }),
         })
     }
 }
@@ -351,9 +452,15 @@ fn normalize_base_url(addr: &str) -> Result<Url> {
         format!("https://{addr}")
     };
     let parsed = Url::parse(&with_scheme)?;
-    if parsed.path().ends_with(API_BASE_PATH) { return Ok(parsed); }
-    let host = format!("{}://{}{}", parsed.scheme(), parsed.host_str().unwrap_or(""),
-        parsed.port().map(|p| format!(":{p}")).unwrap_or_default());
+    if parsed.path().ends_with(API_BASE_PATH) {
+        return Ok(parsed);
+    }
+    let host = format!(
+        "{}://{}{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap_or(""),
+        parsed.port().map(|p| format!(":{p}")).unwrap_or_default()
+    );
     Ok(Url::parse(&format!("{host}{API_BASE_PATH}"))?)
 }
 
@@ -410,7 +517,10 @@ mod tests {
         );
         // The username and address are not secrets and SHOULD appear
         // so operators can tell which client they're looking at.
-        assert!(dbg.contains("alice"), "username should appear in Debug: {dbg}");
+        assert!(
+            dbg.contains("alice"),
+            "username should appear in Debug: {dbg}"
+        );
     }
 
     #[test]
