@@ -47,9 +47,13 @@ impl Auth {
     }
 
     /// Return a valid bearer token, fetching a JWT for password auth if needed.
-    pub(crate) async fn bearer_token(&self, http: &reqwest::Client, base: &Url) -> Result<String> {
+    ///
+    /// The token is wrapped in [`SecretString`] so it can't accidentally
+    /// flow into `Debug` or tracing output; only call `.expose_secret()`
+    /// at the immediate HTTP call site.
+    pub(crate) async fn bearer_token(&self, http: &reqwest::Client, base: &Url) -> Result<SecretString> {
         match self {
-            Auth::Token(t) => Ok(t.expose_secret().to_string()),
+            Auth::Token(t) => Ok(t.clone()),
             Auth::Password { username, password, tenant } => {
                 // Cluster admins POST /api/token/; tenant admins POST /api/token/{name}.
                 let url = base.join(&match tenant {
@@ -69,7 +73,7 @@ impl Auth {
                     } else { "" };
                     return Err(Error::Auth(format!("token request failed ({status}): {body}{hint}")));
                 }
-                Ok(resp.json::<TokenResponse>().await?.access)
+                Ok(SecretString::new(resp.json::<TokenResponse>().await?.access))
             }
         }
     }

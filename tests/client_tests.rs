@@ -147,6 +147,33 @@ async fn jwt_is_cached_across_calls() {
     server.verify().await;
 }
 
+#[tokio::test]
+async fn concurrent_first_calls_exchange_token_only_once() {
+    // Verify the single-flight property: a herd of concurrent first
+    // calls should result in exactly one credential exchange, not one
+    // per task.
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/api/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "jwt" })))
+        .expect(1).mount(&server).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server).await;
+
+    let client = setup_credentials(&server, "alice", "pw", None).await;
+
+    let mut handles = Vec::new();
+    for _ in 0..16 {
+        let c = client.clone();
+        handles.push(tokio::spawn(async move {
+            c.clusters().list().await.unwrap();
+        }));
+    }
+    for h in handles { h.await.unwrap(); }
+
+    server.verify().await;
+}
+
 // ---------------------------------------------------------------------------
 // CRUD smoke tests — one per resource shape
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::{header, Method};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::RwLock;
 use url::Url;
@@ -26,7 +26,12 @@ struct Inner {
     http: reqwest::Client,
     base: Url,
     auth: Auth,
-    cached_token: RwLock<Option<String>>,
+    /// Cached bearer token. Held inside `SecretString` so it can't leak
+    /// through `Debug` (`Inner` derives `Debug` for the public client),
+    /// and behind `RwLock` so a `bearer_token()` slow path can hold the
+    /// write guard across the credential exchange — that gives us
+    /// single-flight initialisation without an extra primitive.
+    cached_token: RwLock<Option<SecretString>>,
 }
 
 impl VastClient {
@@ -147,19 +152,35 @@ impl VastClient {
     {
         let token = self.bearer_token().await?;
         let url = self.inner.base.join(path)?;
-        let mut rb = self.inner.http.request(method, url).bearer_auth(token);
+        // Expose the secret only at the wire boundary. `bearer_auth`
+        // marks the resulting `Authorization` header as sensitive, so
+        // reqwest's tracing won't log it.
+        let mut rb = self.inner.http.request(method, url).bearer_auth(token.expose_secret());
         if let Some(q) = query { rb = rb.query(q); }
         if let Some(b) = body  { rb = rb.json(b); }
         Ok(rb.send().await?)
     }
 
-    async fn bearer_token(&self) -> Result<String> {
-        if let Some(t) = self.inner.cached_token.read().await.as_deref() {
-            return Ok(t.to_string());
+    /// Return a valid bearer token, performing the credential exchange
+    /// on first use. Uses double-checked locking so concurrent first
+    /// callers exchange credentials exactly once instead of racing
+    /// to hit `/api/token/`.
+    async fn bearer_token(&self) -> Result<SecretString> {
+        // Fast path: another task already populated the cache.
+        if let Some(t) = self.inner.cached_token.read().await.as_ref() {
+            return Ok(t.clone());
         }
-        let t = self.inner.auth.bearer_token(&self.inner.http, &self.inner.base).await?;
-        *self.inner.cached_token.write().await = Some(t.clone());
-        Ok(t)
+        // Slow path: take the write lock and re-check inside it. The
+        // credential exchange happens with the lock held, which is what
+        // makes this single-flight — concurrent callers wait on the
+        // same exchange instead of issuing duplicates.
+        let mut guard = self.inner.cached_token.write().await;
+        if let Some(t) = guard.as_ref() {
+            return Ok(t.clone());
+        }
+        let fetched = self.inner.auth.bearer_token(&self.inner.http, &self.inner.base).await?;
+        *guard = Some(fetched.clone());
+        Ok(fetched)
     }
 
     async fn invalidate_cached_token(&self) {
