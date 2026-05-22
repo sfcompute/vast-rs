@@ -37,16 +37,6 @@ where D: serde::Deserializer<'de>, T: Default + Deserialize<'de>,
 // ---------------------------------------------------------------------------
 
 macro_rules! crud {
-    // Read-only resources: list + get.
-    (ro $Handle:ident, $Resource:ty, $path:expr) => {
-        pub struct $Handle<'c>(pub(crate) &'c VastClient);
-        impl<'c> $Handle<'c> {
-            pub async fn list(&self) -> Result<Vec<$Resource>> { self.0.get($path).await }
-            pub async fn get(&self, id: u64) -> Result<$Resource> {
-                self.0.get(&format!("{}{id}/", $path)).await
-            }
-        }
-    };
     // Full CRUD: list/get/create/update/delete.
     ($Handle:ident, $Resource:ty, $Create:ty, $Update:ty, $path:expr) => {
         pub struct $Handle<'c>(pub(crate) &'c VastClient);
