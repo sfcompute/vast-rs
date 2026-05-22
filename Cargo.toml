@@ -59,10 +59,6 @@ integration = []
 # unit tests. Adds an optional dependency on `wiremock`.
 mock = ["dep:wiremock"]
 
-[[example]]
-name = "list_clusters"
-path = "examples/list_clusters.rs"
-
 [[test]]
 name = "mock_tests"
 path = "tests/mock_tests.rs"
