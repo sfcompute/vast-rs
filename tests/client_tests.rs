@@ -2,11 +2,42 @@
 //! only has to populate fields we actually deserialize — everything else flows
 //! into `extra` and is invisible to the test.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use serde_json::json;
 use wiremock::matchers::{body_json, header, method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use vast_rs::VastClient;
+
+/// `Respond` impl that returns a different body on each call, cycling
+/// through `bodies` once and panicking on overflow. Useful when a test
+/// needs two distinct responses from a single mock matcher (e.g. an
+/// initial-token + refreshed-token pair on the same `/api/token/`).
+struct ResponseSequence {
+    bodies: Vec<serde_json::Value>,
+    next: AtomicUsize,
+}
+
+impl ResponseSequence {
+    fn new(bodies: Vec<serde_json::Value>) -> Self {
+        Self {
+            bodies,
+            next: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Respond for ResponseSequence {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        let i = self.next.fetch_add(1, Ordering::SeqCst);
+        let body = self
+            .bodies
+            .get(i)
+            .expect("ResponseSequence: more requests than configured bodies");
+        ResponseTemplate::new(200).set_body_json(body.clone())
+    }
+}
 
 async fn setup(token: &str) -> (MockServer, VastClient) {
     let server = MockServer::start().await;
@@ -139,22 +170,18 @@ async fn jwt_401_triggers_refresh_and_retry() {
     // exactly once with the new token.
     let server = MockServer::start().await;
 
-    // wiremock prefers the most-recently-mounted mock when multiple
-    // match, so mount the "new" token response first and the "old"
-    // response second. The first call drains the "old" mock, the
-    // refresh consumes the "new" mock.
+    // Two POSTs to /api/token/ are expected — the initial exchange and
+    // the post-401 refresh. A stateful `Respond` returns "old" then
+    // "new" deterministically; wiremock's multiple-matching-mocks
+    // ordering is not reliable enough to encode the sequence with two
+    // separate mounts.
     Mock::given(method("POST"))
         .and(path("/api/token/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "new" })))
-        .up_to_n_times(1)
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/token/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "old" })))
-        .up_to_n_times(1)
-        .expect(1)
+        .respond_with(ResponseSequence::new(vec![
+            json!({ "access": "old" }),
+            json!({ "access": "new" }),
+        ]))
+        .expect(2)
         .mount(&server)
         .await;
 

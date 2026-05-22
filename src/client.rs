@@ -466,6 +466,12 @@ fn normalize_base_url(addr: &str) -> Result<Url> {
 
 #[cfg(test)]
 mod tests {
+    // Test code uses `.unwrap()` freely on `Result`s that can't fail
+    // under the inputs given. The crate-level `#![warn(clippy::unwrap_used,
+    // clippy::expect_used)]` in `lib.rs` is meant for library code, not
+    // tests, so opt out locally.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]
