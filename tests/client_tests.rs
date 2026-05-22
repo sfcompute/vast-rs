@@ -337,6 +337,38 @@ async fn tenants_full_crud() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn non_json_error_body_surfaces_in_message() {
+    // A misconfigured gateway / upstream 5xx may return HTML or plain
+    // text. Verify the raw body still flows into the error message
+    // instead of being dropped on the floor.
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET")).and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(502)
+            .insert_header("content-type", "text/html")
+            .set_body_string("<html><body>Bad Gateway</body></html>"))
+        .mount(&server).await;
+
+    let err = client.clusters().list().await.unwrap_err();
+    assert_eq!(err.status_code(), Some(502));
+    let msg = err.to_string();
+    assert!(msg.contains("Bad Gateway"),
+        "expected raw HTML body to surface in error message; got: {msg}");
+}
+
+#[tokio::test]
+async fn empty_error_body_yields_http_status_message() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET")).and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server).await;
+
+    let err = client.clusters().list().await.unwrap_err();
+    assert_eq!(err.status_code(), Some(500));
+    assert!(err.to_string().contains("HTTP 500"),
+        "expected fallback message to include status; got: {err}");
+}
+
+#[tokio::test]
 async fn not_found_and_unauthorized_classify_correctly() {
     let (server, client) = setup("t").await;
     Mock::given(method("GET")).and(path("/api/clusters/999/"))

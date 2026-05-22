@@ -188,12 +188,41 @@ impl VastClient {
     }
 }
 
+/// Build an [`Error::Api`] from a non-2xx response.
+///
+/// VAST returns JSON `{"detail": "..."}` (DRF default) for most error
+/// cases, but a misbehaving gateway, proxy, or upstream 5xx may return
+/// HTML or an empty body. Read the body as text first so we always
+/// surface something useful in those cases instead of dropping it.
 async fn api_error(status: u16, resp: reqwest::Response) -> Error {
-    let message = match resp.json::<serde_json::Value>().await {
-        Ok(v) => v.get("detail").or_else(|| v.get("message"))
-            .and_then(|m| m.as_str()).map(str::to_string)
-            .unwrap_or_else(|| v.to_string()),
-        Err(_) => status.to_string(),
+    let body = resp.text().await.unwrap_or_default();
+    let message = if body.is_empty() {
+        format!("HTTP {status}")
+    } else {
+        match serde_json::from_str::<serde_json::Value>(&body) {
+            // Structured VMS error — prefer DRF's `detail`, fall back
+            // to `message`, then to the raw serialised body.
+            Ok(v) => v
+                .get("detail")
+                .or_else(|| v.get("message"))
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| body.clone()),
+            // Non-JSON (HTML error pages, plain text, etc.) — surface
+            // a truncated raw body so the user can still tell what
+            // happened. Truncate by chars, not bytes, so a multi-byte
+            // UTF-8 codepoint can't be split.
+            Err(_) => {
+                const MAX_LEN: usize = 512;
+                let trimmed = body.trim();
+                if trimmed.chars().count() > MAX_LEN {
+                    let head: String = trimmed.chars().take(MAX_LEN).collect();
+                    format!("{head}…")
+                } else {
+                    trimmed.to_string()
+                }
+            }
+        }
     };
     Error::Api { status, message }
 }
