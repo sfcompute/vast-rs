@@ -28,7 +28,7 @@ vast-rs = { git = "https://github.com/sfcompute/vast-rs" }
 tokio = { version = "1", features = ["full"] }
 ```
 
-> Rust 1.75 or later is required (async traits, Rust 2024 edition).
+> Rust 1.85 or later is required (Rust 2024 edition).
 
 ---
 
@@ -296,16 +296,6 @@ After running, diff `api-spec/vast-openapi.json` against the previous version to
 
 ---
 
-## Running the Example
-
-```bash
-VMS_ADDRESS=vms.example.com \
-VMS_TOKEN=your-token \
-  cargo run --example list_clusters
-```
-
----
-
 ## Running Tests
 
 Unit tests use [wiremock](https://github.com/LukeMathWalker/wiremock-rs) to mock the VMS HTTP API — no cluster needed:
@@ -320,7 +310,7 @@ The mock client (see [Mock client for consumer tests](#mock-client-for-consumer-
 cargo test --features mock
 ```
 
-Integration tests against a real cluster are in `tests/` and are gated behind the `integration` feature (coming soon). Set environment variables and run:
+Integration tests against a real cluster live in `tests/integration.rs` and are gated behind the `integration` feature so the default `cargo test` doesn't touch the network. They're designed to be non-destructive — every resource they create uses a `vast-rs-test-` name prefix and is cleaned up at the end of each test. Set the environment variables and run:
 
 ```bash
 VMS_ADDRESS=vms.example.com VMS_TOKEN=<token> cargo test --features integration
@@ -383,7 +373,7 @@ Paths may be written as `"clusters/"`, `"/clusters/"`, or `"/api/clusters/"` —
 
 Contributions are welcome. A few guidelines:
 
-- **New API resources** — add a module under `src/api/`, register it in `src/api/mod.rs`, and expose it via a method on `VastClient`. Follow the pattern in `src/api/volumes.rs`.
+- **New API resources** — add the resource model and `Create`/`Update` structs in `src/api.rs`, register the handle via the `crud!` macro (or hand-code it if the endpoint has bespoke methods like `delete_folder`), then expose it from `VastClient` with a small accessor method. Follow the pattern of `Volumes` / `Tenants`.
 - **Tests** — every new method should have at least one wiremock-backed unit test in `tests/client_tests.rs`.
 - **No `unwrap()` in library code** — propagate errors with `?`.
 - **Secrets discipline** — any new credential type must use `SecretString` (or equivalent) so it cannot leak into logs.
