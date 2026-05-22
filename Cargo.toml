@@ -7,6 +7,21 @@ license = "MIT OR Apache-2.0"
 keywords = ["vast", "storage", "api", "client"]
 categories = ["api-bindings", "network-programming"]
 
+# Project-wide lints. These catch the "no unwrap in library code" and
+# "no debug prints" disciplines declared in README.md at compile time.
+# `unwrap_used` / `expect_used` are scoped to the lib via inner attributes
+# in `src/lib.rs` so tests can still use `.unwrap()` freely.
+[lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "warn"
+print_stderr = "warn"
+
 [lib]
 name = "vast_rs"
 path = "src/lib.rs"

@@ -22,6 +22,12 @@
 //! Paths are relative to `/api/`: `"clusters/"`, `"/clusters/"`, and
 //! `"/api/clusters/"` all match the same endpoint.
 
+// This module is test-support: `VastClient::builder().build()` is genuinely
+// infallible with the inputs we pass (a wiremock URI + a hard-coded token),
+// so `.expect("…")` is the right ergonomic. Allow the lint locally rather
+// than threading `Result` through every helper.
+#![allow(clippy::expect_used)]
+
 use serde_json::{json, Value};
 use wiremock::matchers::{method as wm_method, path as wm_path};
 use wiremock::{Mock, MockServer, ResponseTemplate, Times};
