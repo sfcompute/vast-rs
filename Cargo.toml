@@ -38,9 +38,14 @@ tracing = "0.1"
 # URL handling
 url = { version = "2", features = ["serde"] }
 
+# HTTP mocking — only pulled in when the `mock` feature is enabled.
+# Consumers add `vast-rs = { version = "...", features = ["mock"] }` to
+# their `[dev-dependencies]` to access `vast_rs::mock::MockVastClient`.
+wiremock = { version = "0.6", optional = true }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
-# HTTP mocking for unit tests
+# HTTP mocking for our own unit tests (always available regardless of features).
 wiremock = "0.6"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde_json = "1"
@@ -50,6 +55,20 @@ serde_json = "1"
 #   VMS_ADDRESS=localhost:2443 VMS_TOKEN=<tok> cargo test --features integration
 integration = []
 
+# Enables `vast_rs::mock::MockVastClient`, a pre-built mock for consumers'
+# unit tests. Adds an optional dependency on `wiremock`.
+mock = ["dep:wiremock"]
+
 [[example]]
 name = "list_clusters"
 path = "examples/list_clusters.rs"
+
+[[test]]
+name = "mock_tests"
+path = "tests/mock_tests.rs"
+required-features = ["mock"]
+
+[package.metadata.docs.rs]
+# Document the `mock` module on docs.rs.
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

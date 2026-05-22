@@ -46,7 +46,7 @@ async fn main() -> vast_rs::Result<()> {
 
     let clusters = client.clusters().list().await?;
     for c in &clusters {
-        println!("{}: {} ({})", c.id, c.name, c.sw_version.as_deref().unwrap_or("unknown"));
+        println!("{}: {} ({})", c.id, c.name, c.sw_version);
     }
 
     Ok(())
@@ -76,7 +76,7 @@ let client = VastClient::builder()
 
 ```rust
 // Reads VMS_ADDRESS + VMS_TOKEN (or VMS_USER + VMS_PASSWORD) from the environment
-let client = vast_rs::VastClient::new(vast_rs::ClientConfig::from_env()?)?;
+let client = vast_rs::VastClient::from_env()?;
 ```
 
 ---
@@ -108,7 +108,7 @@ let cluster = client.clusters().get(1).await?;
 ### Nodes
 
 ```rust
-use vast_rs::api::nodes::ListNodesParams;
+use vast_rs::api::ListNodesParams;
 
 // List all nodes
 let nodes = client.nodes().list().await?;
@@ -121,7 +121,7 @@ let nodes = client.nodes().list_with_params(&params).await?;
 ### Volumes
 
 ```rust
-use vast_rs::api::volumes::{CreateVolume, UpdateVolume};
+use vast_rs::api::{CreateVolume, UpdateVolume};
 
 // List volumes
 let volumes = client.volumes().list().await?;
@@ -146,7 +146,7 @@ client.volumes().delete(vol.id).await?;
 ### Users
 
 ```rust
-use vast_rs::api::users::{CreateUser, UpdateUser};
+use vast_rs::api::{CreateUser, UpdateUser};
 
 let users = client.users().list().await?;
 
@@ -163,7 +163,7 @@ client.users().delete(user.id).await?;
 ### Views
 
 ```rust
-use vast_rs::api::views::{CreateView, UpdateView};
+use vast_rs::api::{CreateView, UpdateView};
 
 let views = client.views().list().await?;
 
@@ -172,9 +172,13 @@ let view = client.views().create(&CreateView {
     path: "/data".into(),
     policy_id: 1,
     protocols: vec!["NFS".into()],
+    create_dir: Some(true),
     alias: None,
     bucket: None,
     allow_anonymous_access: None,
+    s3_versioning: None,
+    s3_locks: None,
+    s3_locks_retention_mode: None,
 }).await?;
 
 client.views().delete(view.id).await?;
@@ -190,13 +194,14 @@ let policy = client.view_policies().get(1).await?;
 ### Quotas
 
 ```rust
-use vast_rs::api::quotas::{CreateQuota, UpdateQuota};
+use vast_rs::api::{CreateQuota, UpdateQuota};
 
 let quotas = client.quotas().list().await?;
 
 let quota = client.quotas().create(&CreateQuota {
     name: "team-limit".into(),
-    hard_limit: 10 * 1024 * 1024 * 1024, // 10 GiB
+    path: "/data".into(),
+    hard_limit: Some(10 * 1024 * 1024 * 1024), // 10 GiB
     soft_limit: Some(8 * 1024 * 1024 * 1024),
     hard_limit_inodes: None,
     soft_limit_inodes: None,
@@ -217,7 +222,7 @@ let pools = client.vip_pools().list().await?;
 ### Snapshots
 
 ```rust
-use vast_rs::api::snapshots::CreateSnapshot;
+use vast_rs::api::CreateSnapshot;
 
 let snaps = client.snapshots().list().await?;
 
@@ -245,12 +250,14 @@ match client.clusters().get(999).await {
 ## Builder Options
 
 ```rust
+use std::time::Duration;
+
 let client = VastClient::builder()
-    .address("vms.example.com")         // required — scheme added automatically
-    .token("tok")                        // or .credentials("user", "pass")
-    .tenant("acme")                      // required for tenant admin accounts
-    .timeout_secs(60)                    // default: 30
-    .danger_accept_invalid_certs(true)   // for self-signed certs; dev only
+    .address("vms.example.com")                  // required — scheme added automatically
+    .token("tok")                                 // or .credentials("user", "pass")
+    .tenant("acme")                               // required for tenant admin accounts
+    .timeout(Duration::from_secs(60))             // default: 30s
+    .danger_accept_invalid_certs(true)            // for self-signed certs; dev only
     .build()?;
 ```
 
@@ -307,11 +314,68 @@ Unit tests use [wiremock](https://github.com/LukeMathWalker/wiremock-rs) to mock
 cargo test
 ```
 
+The mock client (see [Mock client for consumer tests](#mock-client-for-consumer-tests) below) lives behind the `mock` feature. To exercise its own test suite, run:
+
+```bash
+cargo test --features mock
+```
+
 Integration tests against a real cluster are in `tests/` and are gated behind the `integration` feature (coming soon). Set environment variables and run:
 
 ```bash
 VMS_ADDRESS=vms.example.com VMS_TOKEN=<token> cargo test --features integration
 ```
+
+---
+
+## Mock client for consumer tests
+
+If you're building an application or library on top of `vast-rs`, you can use `vast_rs::mock::MockVastClient` to unit-test code that takes a `&VastClient` — no live cluster, no `wiremock` boilerplate. Enable the `mock` feature in your dev-dependencies:
+
+```toml
+[dev-dependencies]
+vast-rs = { version = "0.1", features = ["mock"] }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+```
+
+Then stub VMS responses with `json!` literals and exercise your code:
+
+```rust
+use serde_json::json;
+use vast_rs::{VastClient, mock::MockVastClient};
+
+async fn count_online_clusters(client: &VastClient) -> usize {
+    client.clusters().list().await.unwrap()
+        .iter()
+        .filter(|c| c.state == "ONLINE")
+        .count()
+}
+
+#[tokio::test]
+async fn counts_only_online() {
+    let mock = MockVastClient::start().await;
+    mock.stub_get("clusters/", json!([
+        { "id": 1, "name": "a", "state": "ONLINE" },
+        { "id": 2, "name": "b", "state": "OFFLINE" },
+        { "id": 3, "name": "c", "state": "ONLINE" },
+    ])).await;
+
+    assert_eq!(count_online_clusters(&mock.client()).await, 2);
+}
+```
+
+Helpers on `MockVastClient`:
+
+| Helper                                  | What it does                                                |
+|-----------------------------------------|-------------------------------------------------------------|
+| `stub_get/post/patch/delete(path, ...)` | Stub the common verbs with sensible default statuses        |
+| `stub_error(method, path, status, msg)` | Stub a `{"detail": msg}` error response                     |
+| `stub_with(method, path, status, body, times)` | Stub with a call-count expectation (`u64` or range); enforce via `verify()` |
+| `server()`                              | Underlying `wiremock::MockServer` for advanced matching     |
+| `reset()` / `verify()`                  | Clear stubs / assert expectations were met                  |
+
+Paths may be written as `"clusters/"`, `"/clusters/"`, or `"/api/clusters/"` — they all match the same endpoint.
 
 ---
 

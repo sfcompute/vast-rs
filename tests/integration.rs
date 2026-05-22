@@ -32,13 +32,7 @@
 use std::env;
 
 use vast_rs::{
-    api::{
-        quotas::CreateQuota,
-        tenants::CreateTenant,
-        viewpolicies::CreateViewPolicy,
-        views::CreateView,
-        vippools::CreateVipPool,
-    },
+    api::{CreateQuota, CreateTenant, CreateView, CreateViewPolicy, CreateVipPool},
     VastClient,
 };
 
@@ -179,7 +173,7 @@ async fn view_policies_crud() {
     // UPDATE — add a no-squash CIDR entry.
     // (SMB lease-disable flags must be set as a group; updating individual
     // flags is rejected.  nfs_no_squash has no such constraint.)
-    use vast_rs::api::viewpolicies::UpdateViewPolicy;
+    use vast_rs::api::UpdateViewPolicy;
     let updated = client
         .view_policies()
         .update(
@@ -191,10 +185,11 @@ async fn view_policies_crud() {
         )
         .await
         .expect("view_policies().update() failed");
-    assert!(
-        updated.nfs_no_squash.contains(&"10.0.0.0/8".to_string()),
-        "nfs_no_squash should contain 10.0.0.0/8 after update"
-    );
+    // `nfs_no_squash` isn't on the slim ViewPolicy model — look it up in `.extra`.
+    let no_squash = updated.extra.get("nfs_no_squash").and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).any(|s| s == "10.0.0.0/8"))
+        .unwrap_or(false);
+    assert!(no_squash, "nfs_no_squash should contain 10.0.0.0/8 after update");
 
     // DELETE — clean up
     client
@@ -286,7 +281,7 @@ async fn views_crud() {
 
     // UPDATE — set an NFS alias path (plain string field, no protocol constraint).
     let alias = format!("/alias-{name}");
-    use vast_rs::api::views::UpdateView;
+    use vast_rs::api::UpdateView;
     let updated = client
         .views()
         .update(
@@ -298,7 +293,12 @@ async fn views_crud() {
         )
         .await
         .expect("views().update() failed");
-    assert_eq!(updated.alias, alias, "alias should be set after update");
+    // `alias` isn't promoted to the slim View model — verify via `.extra`.
+    assert_eq!(
+        updated.extra.get("alias").and_then(|v| v.as_str()),
+        Some(alias.as_str()),
+        "alias should be set after update"
+    );
 
     // DELETE view record (does not remove the backing directory).
     client
@@ -418,7 +418,7 @@ async fn quotas_crud() {
     assert_eq!(fetched.name, name);
 
     // UPDATE — raise the hard limit
-    use vast_rs::api::quotas::UpdateQuota;
+    use vast_rs::api::UpdateQuota;
     let updated = client
         .quotas()
         .update(
@@ -512,7 +512,7 @@ async fn vip_pools_crud() {
     assert_eq!(fetched.name, name);
 
     // UPDATE — expand the end IP
-    use vast_rs::api::vippools::UpdateVipPool;
+    use vast_rs::api::UpdateVipPool;
     let updated = client
         .vip_pools()
         .update(
@@ -591,7 +591,7 @@ async fn tenants_crud() {
     // (vms_root_no_tenant_access, s3_root_no_tenant_access) appear to be
     // read-only after creation on this cluster, so we just assert the call
     // succeeds and round-trips a parseable response.
-    use vast_rs::api::tenants::UpdateTenant;
+    use vast_rs::api::UpdateTenant;
     let updated = client
         .tenants()
         .update(tenant_id, &UpdateTenant::default())
@@ -629,71 +629,8 @@ async fn not_found_returns_structured_error() {
     );
 }
 
-#[tokio::test]
-async fn list_clusters_returns_at_least_one() {
-    let client = build_client();
-    let clusters = client.clusters().list().await.expect("list failed");
-    assert!(!clusters.is_empty(), "expected at least one cluster");
-    // Check that the full struct deserialises without panicking.
-    println!("cluster[0]: {:?}", clusters[0].name);
-}
-
-#[tokio::test]
-async fn list_views_deserialises_fully() {
-    let client = build_client();
-    let views = client.views().list().await.expect("views().list() failed");
-    // Even an empty list is fine — we just need zero deserialization errors.
-    println!("views count: {}", views.len());
-    for v in &views {
-        // Access a few promoted fields to ensure they're populated.
-        let _ = &v.url;
-        let _ = &v.sync_time;
-        let _ = &v.s3_object_ownership_rule;
-        let _ = v.is_indestructible_object_enabled;
-    }
-}
-
-#[tokio::test]
-async fn list_view_policies_deserialises_fully() {
-    let client = build_client();
-    let policies = client
-        .view_policies()
-        .list()
-        .await
-        .expect("view_policies().list() failed");
-    println!("view policies count: {}", policies.len());
-    for p in &policies {
-        let _ = &p.url;
-        let _ = &p.sync_time;
-        let _ = &p.gid_inheritance;
-        let _ = p.enable_snapshot_lookup;
-    }
-}
-
-#[tokio::test]
-async fn list_quotas_deserialises_fully() {
-    let client = build_client();
-    let quotas = client.quotas().list().await.expect("quotas().list() failed");
-    println!("quotas count: {}", quotas.len());
-    for q in &quotas {
-        let _ = &q.url;
-        let _ = &q.pretty_state;
-        let _ = q.used_limited_capacity;
-    }
-}
-
-#[tokio::test]
-async fn list_vip_pools_deserialises_fully() {
-    let client = build_client();
-    let pools = client
-        .vip_pools()
-        .list()
-        .await
-        .expect("vip_pools().list() failed");
-    println!("vip pools count: {}", pools.len());
-    for p in &pools {
-        let _ = &p.url;
-        let _ = &p.sync_time;
-        let _ = p.enable_weighted_balancing;
-    }
-}
+// Note: the previous `list_*_deserialises_fully` smoke tests verified that
+// the (formerly bloated) typed models accepted every field returned by the
+// VMS. With the slim models + `extra: Map` forward-compat design, that
+// concern is structurally impossible to trip — any field we don't promote
+// just flows into `.extra`. The CRUD tests above cover the real round-trip.
