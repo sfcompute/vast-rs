@@ -51,9 +51,18 @@
 //! other field the VMS returns — so unknown / newer / cluster-specific fields
 //! flow through unchanged. Reach for them via `resource.extra.get("field")`.
 
-// Library-code discipline: callers should propagate errors with `?`, not
-// panic. Tests and examples are unaffected (lints fire on lib code only).
-#![warn(clippy::unwrap_used, clippy::expect_used)]
+// Library-code discipline (lints fire on lib code only; tests and
+// integration tests are unaffected):
+//
+//   * Callers should propagate errors with `?`, not panic.
+//   * No `println!` / `eprintln!` leaking diagnostic output into
+//     applications using the SDK — use `tracing` instead.
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 
 pub mod api;
 mod auth;
