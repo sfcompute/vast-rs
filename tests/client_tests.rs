@@ -3,7 +3,7 @@
 //! into `extra` and is invisible to the test.
 
 use serde_json::json;
-use wiremock::matchers::{body_json, header, method, path};
+use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use vast_rs::VastClient;
@@ -298,6 +298,118 @@ async fn vip_pools_list_parses_active_cnode_ids() {
     let pools = client.vip_pools().list().await.unwrap();
     assert_eq!(pools[0].start_ip, "10.0.1.1");
     assert_eq!(pools[0].active_cnode_ids, vec![1, 2]);
+}
+
+#[tokio::test]
+async fn nodes_list_with_params_serialises_query_string() {
+    use vast_rs::api::ListNodesParams;
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET")).and(path("/api/nodes/"))
+        .and(query_param("cluster_id", "7"))
+        .and(query_param("state", "ONLINE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1).mount(&server).await;
+
+    let params = ListNodesParams { cluster_id: Some(7), state: Some("ONLINE".into()) };
+    client.nodes().list_with_params(&params).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn nodes_list_with_params_omits_none_fields() {
+    use vast_rs::api::ListNodesParams;
+    let (server, client) = setup("t").await;
+    // No matchers asserting query params: this mock should fire even
+    // when no query string is present. We then verify exactly one call.
+    Mock::given(method("GET")).and(path("/api/nodes/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1).mount(&server).await;
+
+    client.nodes().list_with_params(&ListNodesParams::default()).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn delete_folder_posts_body_on_delete() {
+    // `delete_folder` is the only hand-coded method that sends a body
+    // on a DELETE — easy to break without noticing.
+    let (server, client) = setup("t").await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/clusters/1/delete_folder/"))
+        .and(body_json(json!({ "path": "/data/scratch", "tenant_id": 2 })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1).mount(&server).await;
+
+    client.clusters().delete_folder(1, "/data/scratch", Some(2)).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn delete_folder_omits_tenant_id_when_none() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/clusters/1/delete_folder/"))
+        .and(body_json(json!({ "path": "/data/scratch" })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1).mount(&server).await;
+
+    client.clusters().delete_folder(1, "/data/scratch", None).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn users_full_crud() {
+    use vast_rs::api::{CreateUser, UpdateUser};
+    let (server, client) = setup("t").await;
+    Mock::given(method("POST")).and(path("/api/users/"))
+        .and(body_json(json!({ "name": "alice", "uid": 1001 })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 5, "name": "alice", "uid": 1001
+        })))
+        .expect(1).mount(&server).await;
+    Mock::given(method("PATCH")).and(path("/api/users/5/"))
+        .and(body_json(json!({ "enabled": false })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 5, "name": "alice", "uid": 1001, "enabled": false
+        })))
+        .expect(1).mount(&server).await;
+    Mock::given(method("DELETE")).and(path("/api/users/5/"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1).mount(&server).await;
+
+    let created = client.users().create(&CreateUser {
+        name: "alice".into(), uid: Some(1001), email: None, enabled: None,
+    }).await.unwrap();
+    assert_eq!(created.id, 5);
+
+    let updated = client.users().update(5, &UpdateUser {
+        enabled: Some(false), ..Default::default()
+    }).await.unwrap();
+    assert_eq!(updated.enabled, Some(false));
+
+    client.users().delete(5).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn snapshots_create_and_delete() {
+    use vast_rs::api::CreateSnapshot;
+    let (server, client) = setup("t").await;
+    Mock::given(method("POST")).and(path("/api/snapshots/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 9, "guid": "abc", "name": "nightly", "path": "/data"
+        })))
+        .expect(1).mount(&server).await;
+    Mock::given(method("DELETE")).and(path("/api/snapshots/9/"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1).mount(&server).await;
+
+    let snap = client.snapshots().create(&CreateSnapshot {
+        name: "nightly".into(), path: "/data".into(),
+    }).await.unwrap();
+    assert_eq!(snap.id, 9);
+    client.snapshots().delete(snap.id).await.unwrap();
+    server.verify().await;
 }
 
 #[tokio::test]

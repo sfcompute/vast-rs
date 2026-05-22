@@ -356,3 +356,72 @@ fn normalize_base_url(addr: &str) -> Result<Url> {
         parsed.port().map(|p| format!(":{p}")).unwrap_or_default());
     Ok(Url::parse(&format!("{host}{API_BASE_PATH}"))?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_base_url_host_only_adds_https_and_api_path() {
+        let u = normalize_base_url("vms.example.com").unwrap();
+        assert_eq!(u.as_str(), "https://vms.example.com/api/");
+    }
+
+    #[test]
+    fn normalize_base_url_host_port_preserves_port() {
+        let u = normalize_base_url("vms.example.com:8443").unwrap();
+        assert_eq!(u.as_str(), "https://vms.example.com:8443/api/");
+    }
+
+    #[test]
+    fn normalize_base_url_full_https_url_with_api_path_passes_through() {
+        let u = normalize_base_url("https://vms.example.com/api/").unwrap();
+        assert_eq!(u.as_str(), "https://vms.example.com/api/");
+    }
+
+    #[test]
+    fn normalize_base_url_http_scheme_preserved() {
+        // Plain HTTP is used by the wiremock-backed tests and shouldn't
+        // be rewritten to https.
+        let u = normalize_base_url("http://127.0.0.1:12345").unwrap();
+        assert_eq!(u.as_str(), "http://127.0.0.1:12345/api/");
+    }
+
+    #[test]
+    fn normalize_base_url_drops_extraneous_path_components() {
+        // If the caller passes a URL with a non-`/api/` path, we replace
+        // it with `/api/` rather than appending. This matches the
+        // expected base for `Url::join` to produce `<base>/clusters/`.
+        let u = normalize_base_url("https://vms.example.com/legacy/").unwrap();
+        assert_eq!(u.as_str(), "https://vms.example.com/api/");
+    }
+
+    #[test]
+    fn debug_output_redacts_password() {
+        // README declares: secrets discipline — passwords must not flow
+        // into Debug. The `SecretString` wrapper enforces this.
+        let builder = Builder::default()
+            .address("vms.example.com")
+            .credentials("alice", "hunter2");
+        let dbg = format!("{builder:?}");
+        assert!(
+            !dbg.contains("hunter2"),
+            "password leaked into Debug output: {dbg}"
+        );
+        // The username and address are not secrets and SHOULD appear
+        // so operators can tell which client they're looking at.
+        assert!(dbg.contains("alice"), "username should appear in Debug: {dbg}");
+    }
+
+    #[test]
+    fn debug_output_redacts_token() {
+        let builder = Builder::default()
+            .address("vms.example.com")
+            .token("super-secret-token-value");
+        let dbg = format!("{builder:?}");
+        assert!(
+            !dbg.contains("super-secret-token-value"),
+            "token leaked into Debug output: {dbg}"
+        );
+    }
+}
