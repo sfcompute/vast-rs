@@ -1,9 +1,9 @@
 /target
 /.generated-scratch
-/api-spec/vast-openapi-v3.json
 
-# Added by cargo
-#
-# already existing elements were commented out
-
-#/target
+# VM images and intermediates produced by dev/ scripts — never check in.
+*.ovf
+*.ova
+*.vmdk
+*.qcow2
+*.iso
