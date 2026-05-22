@@ -146,6 +146,17 @@ impl VastClient {
         Ok(resp)
     }
 
+    #[tracing::instrument(
+        name = "vast.request",
+        skip_all,
+        fields(
+            http.method = %method,
+            http.path = %path,
+            http.status = tracing::field::Empty,
+            duration_ms = tracing::field::Empty,
+        ),
+        err,
+    )]
     async fn send_once<Q, B>(&self, method: Method, path: &str, query: Option<&Q>, body: Option<&B>)
         -> Result<reqwest::Response>
     where Q: Serialize + ?Sized, B: Serialize + ?Sized,
@@ -158,7 +169,13 @@ impl VastClient {
         let mut rb = self.inner.http.request(method, url).bearer_auth(token.expose_secret());
         if let Some(q) = query { rb = rb.query(q); }
         if let Some(b) = body  { rb = rb.json(b); }
-        Ok(rb.send().await?)
+
+        let start = std::time::Instant::now();
+        let resp = rb.send().await?;
+        let span = tracing::Span::current();
+        span.record("http.status", resp.status().as_u16());
+        span.record("duration_ms", start.elapsed().as_millis() as u64);
+        Ok(resp)
     }
 
     /// Return a valid bearer token, performing the credential exchange
@@ -178,6 +195,7 @@ impl VastClient {
         if let Some(t) = guard.as_ref() {
             return Ok(t.clone());
         }
+        tracing::debug!("performing credential exchange against VMS token endpoint");
         let fetched = self.inner.auth.bearer_token(&self.inner.http, &self.inner.base).await?;
         *guard = Some(fetched.clone());
         Ok(fetched)
