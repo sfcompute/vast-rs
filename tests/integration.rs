@@ -31,7 +31,7 @@
 
 use std::env;
 
-use vast_rs::{
+use vast::{
     VastClient,
     api::{CreateQuota, CreateTenant, CreateView, CreateViewPolicy, CreateVipPool},
 };
@@ -174,7 +174,7 @@ async fn view_policies_crud() {
     // UPDATE — add a no-squash CIDR entry.
     // (SMB lease-disable flags must be set as a group; updating individual
     // flags is rejected.  nfs_no_squash has no such constraint.)
-    use vast_rs::api::UpdateViewPolicy;
+    use vast::api::UpdateViewPolicy;
     let updated = client
         .view_policies()
         .update(
@@ -292,7 +292,7 @@ async fn views_crud() {
 
     // UPDATE — set an NFS alias path (plain string field, no protocol constraint).
     let alias = format!("/alias-{name}");
-    use vast_rs::api::UpdateView;
+    use vast::api::UpdateView;
     let updated = client
         .views()
         .update(
@@ -433,7 +433,7 @@ async fn quotas_crud() {
     assert_eq!(fetched.name, name);
 
     // UPDATE — raise the hard limit
-    use vast_rs::api::UpdateQuota;
+    use vast::api::UpdateQuota;
     let updated = client
         .quotas()
         .update(
@@ -527,7 +527,7 @@ async fn vip_pools_crud() {
     assert_eq!(fetched.name, name);
 
     // UPDATE — expand the end IP
-    use vast_rs::api::UpdateVipPool;
+    use vast::api::UpdateVipPool;
     let updated = client
         .vip_pools()
         .update(
@@ -603,7 +603,7 @@ async fn tenants_crud() {
     // (vms_root_no_tenant_access, s3_root_no_tenant_access) appear to be
     // read-only after creation on this cluster, so we just assert the call
     // succeeds and round-trips a parseable response.
-    use vast_rs::api::UpdateTenant;
+    use vast::api::UpdateTenant;
     let updated = client
         .tenants()
         .update(tenant_id, &UpdateTenant::default())

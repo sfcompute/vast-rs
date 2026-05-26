@@ -6,7 +6,7 @@ use serde_json::json;
 use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use vast_rs::VastClient;
+use vast::VastClient;
 
 async fn setup(token: &str) -> (MockServer, VastClient) {
     let server = MockServer::start().await;
@@ -275,7 +275,7 @@ async fn clusters_list_and_get() {
 
 #[tokio::test]
 async fn volumes_create() {
-    use vast_rs::api::CreateVolume;
+    use vast::api::CreateVolume;
     let (server, client) = setup("t").await;
     Mock::given(method("POST"))
         .and(path("/api/volumes/"))
@@ -300,7 +300,7 @@ async fn volumes_create() {
 
 #[tokio::test]
 async fn views_list_and_create() {
-    use vast_rs::api::CreateView;
+    use vast::api::CreateView;
     let (server, client) = setup("t").await;
     Mock::given(method("GET"))
         .and(path("/api/views/"))
@@ -380,7 +380,7 @@ async fn vip_pools_list_parses_active_cnode_ids() {
 
 #[tokio::test]
 async fn nodes_list_with_params_serialises_query_string() {
-    use vast_rs::api::ListNodesParams;
+    use vast::api::ListNodesParams;
     let (server, client) = setup("t").await;
     Mock::given(method("GET"))
         .and(path("/api/nodes/"))
@@ -401,7 +401,7 @@ async fn nodes_list_with_params_serialises_query_string() {
 
 #[tokio::test]
 async fn nodes_list_with_params_omits_none_fields() {
-    use vast_rs::api::ListNodesParams;
+    use vast::api::ListNodesParams;
     let (server, client) = setup("t").await;
     // No matchers asserting query params: this mock should fire even
     // when no query string is present. We then verify exactly one call.
@@ -464,7 +464,7 @@ async fn delete_folder_omits_tenant_id_when_none() {
 
 #[tokio::test]
 async fn users_full_crud() {
-    use vast_rs::api::{CreateUser, UpdateUser};
+    use vast::api::{CreateUser, UpdateUser};
     let (server, client) = setup("t").await;
     Mock::given(method("POST"))
         .and(path("/api/users/"))
@@ -522,7 +522,7 @@ async fn users_full_crud() {
 
 #[tokio::test]
 async fn snapshots_create_and_delete() {
-    use vast_rs::api::CreateSnapshot;
+    use vast::api::CreateSnapshot;
     let (server, client) = setup("t").await;
     Mock::given(method("POST"))
         .and(path("/api/snapshots/"))
@@ -554,7 +554,7 @@ async fn snapshots_create_and_delete() {
 
 #[tokio::test]
 async fn tenants_full_crud() {
-    use vast_rs::api::CreateTenant;
+    use vast::api::CreateTenant;
     let (server, client) = setup("t").await;
     Mock::given(method("GET"))
         .and(path("/api/tenants/"))

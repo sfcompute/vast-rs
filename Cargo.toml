@@ -1,5 +1,5 @@
 [package]
-name = "vast-rs"
+name = "vast"
 version = "0.1.0"
 edition = "2024"
 description = "Rust client library for the VAST Data Management System REST API"
@@ -25,7 +25,7 @@ unimplemented = "deny"
 # inner attribute in `src/lib.rs` instead.
 
 [lib]
-name = "vast_rs"
+name = "vast"
 path = "src/lib.rs"
 
 [dependencies]
@@ -56,8 +56,8 @@ tracing = "0.1"
 url = { version = "2", features = ["serde"] }
 
 # HTTP mocking — only pulled in when the `mock` feature is enabled.
-# Consumers add `vast-rs = { version = "...", features = ["mock"] }` to
-# their `[dev-dependencies]` to access `vast_rs::mock::MockVastClient`.
+# Consumers add `vast = { version = "...", features = ["mock"] }` to
+# their `[dev-dependencies]` to access `vast::mock::MockVastClient`.
 wiremock = { version = "0.6", optional = true }
 
 [dev-dependencies]
@@ -72,7 +72,7 @@ serde_json = "1"
 #   VMS_ADDRESS=localhost:2443 VMS_TOKEN=<tok> cargo test --features integration
 integration = []
 
-# Enables `vast_rs::mock::MockVastClient`, a pre-built mock for consumers'
+# Enables `vast::mock::MockVastClient`, a pre-built mock for consumers'
 # unit tests. Adds an optional dependency on `wiremock`.
 mock = ["dep:wiremock"]
 

@@ -3,7 +3,7 @@
 #![recursion_limit = "256"]
 
 use serde_json::json;
-use vast_rs::mock::MockVastClient;
+use vast::mock::MockVastClient;
 
 #[tokio::test]
 async fn stub_get_roundtrip() {
@@ -25,7 +25,7 @@ async fn stub_get_roundtrip() {
 
 #[tokio::test]
 async fn stub_post_returns_created_resource() {
-    use vast_rs::api::CreateVolume;
+    use vast::api::CreateVolume;
 
     let mock = MockVastClient::start().await;
     mock.stub_post(

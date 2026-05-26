@@ -4,12 +4,12 @@
 //!
 //! ```toml
 //! [dev-dependencies]
-//! vast-rs = { version = "0.1", features = ["mock"] }
+//! vast = { version = "0.1", features = ["mock"] }
 //! ```
 //!
 //! ```rust,no_run
 //! # use serde_json::json;
-//! # use vast_rs::{VastClient, mock::MockVastClient};
+//! # use vast::{VastClient, mock::MockVastClient};
 //! # async fn run() {
 //! let mock = MockVastClient::start().await;
 //! mock.stub_get("clusters/", json!([{ "id": 1, "name": "a" }])).await;

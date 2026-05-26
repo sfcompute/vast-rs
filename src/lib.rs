@@ -1,4 +1,4 @@
-//! # vast-rs
+//! # vast
 //!
 //! A strongly-typed async Rust client for the VAST Data Management System (VMS)
 //! REST API — peer to VAST's official Python SDK
@@ -7,10 +7,10 @@
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! use vast_rs::VastClient;
+//! use vast::VastClient;
 //!
 //! #[tokio::main]
-//! async fn main() -> vast_rs::Result<()> {
+//! async fn main() -> vast::Result<()> {
 //!     // Token auth (recommended for automation):
 //!     let client = VastClient::builder()
 //!         .address("vms.example.com")
@@ -30,13 +30,13 @@
 //! Tenant-admin accounts must call `.tenant("name")` — cluster admins omit it.
 //!
 //! ```rust,no_run
-//! # use vast_rs::VastClient;
+//! # use vast::VastClient;
 //! let client = VastClient::builder()
 //!     .address("vms.example.com")
 //!     .credentials("alice", "secret")
 //!     .tenant("acme")
 //!     .build()?;
-//! # Ok::<_, vast_rs::Error>(())
+//! # Ok::<_, vast::Error>(())
 //! ```
 //!
 //! ### From the environment

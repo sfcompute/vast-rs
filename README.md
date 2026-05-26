@@ -1,8 +1,8 @@
-# vast-rs
+# vast
 
 A strongly-typed, async Rust client for the [VAST Data Management System (VMS) REST API](https://kb.vastdata.com/docs/vast-rest-api-overview).
 
-`vast-rs` is a peer library to [vastpy](https://github.com/vast-data/vastpy), VAST's official Python SDK. API types are intended to be generated directly from your cluster's OpenAPI specification so they are always in sync with your installed VMS version.
+The `vast` crate (repo: [`vast-rs`](https://github.com/sfcompute/vast-rs)) is a peer library to [vastpy](https://github.com/vast-data/vastpy), VAST's official Python SDK. API types are intended to be generated directly from your cluster's OpenAPI specification so they are always in sync with your installed VMS version.
 
 ---
 
@@ -24,7 +24,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-vast-rs = { git = "https://github.com/sfcompute/vast-rs" }
+vast = { git = "https://github.com/sfcompute/vast-rs" }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -35,10 +35,10 @@ tokio = { version = "1", features = ["full"] }
 ## Quick Start
 
 ```rust
-use vast_rs::VastClient;
+use vast::VastClient;
 
 #[tokio::main]
-async fn main() -> vast_rs::Result<()> {
+async fn main() -> vast::Result<()> {
     let client = VastClient::builder()
         .address("vms.example.com")
         .token("your-api-token")
@@ -76,7 +76,7 @@ let client = VastClient::builder()
 
 ```rust
 // Reads VMS_ADDRESS + VMS_TOKEN (or VMS_USER + VMS_PASSWORD) from the environment
-let client = vast_rs::VastClient::from_env()?;
+let client = vast::VastClient::from_env()?;
 ```
 
 ---
@@ -108,7 +108,7 @@ let cluster = client.clusters().get(1).await?;
 ### Nodes
 
 ```rust
-use vast_rs::api::ListNodesParams;
+use vast::api::ListNodesParams;
 
 // List all nodes
 let nodes = client.nodes().list().await?;
@@ -121,7 +121,7 @@ let nodes = client.nodes().list_with_params(&params).await?;
 ### Volumes
 
 ```rust
-use vast_rs::api::{CreateVolume, UpdateVolume};
+use vast::api::{CreateVolume, UpdateVolume};
 
 // List volumes
 let volumes = client.volumes().list().await?;
@@ -146,7 +146,7 @@ client.volumes().delete(vol.id).await?;
 ### Users
 
 ```rust
-use vast_rs::api::{CreateUser, UpdateUser};
+use vast::api::{CreateUser, UpdateUser};
 
 let users = client.users().list().await?;
 
@@ -163,7 +163,7 @@ client.users().delete(user.id).await?;
 ### Views
 
 ```rust
-use vast_rs::api::{CreateView, UpdateView};
+use vast::api::{CreateView, UpdateView};
 
 let views = client.views().list().await?;
 
@@ -194,7 +194,7 @@ let policy = client.view_policies().get(1).await?;
 ### Quotas
 
 ```rust
-use vast_rs::api::{CreateQuota, UpdateQuota};
+use vast::api::{CreateQuota, UpdateQuota};
 
 let quotas = client.quotas().list().await?;
 
@@ -222,7 +222,7 @@ let pools = client.vip_pools().list().await?;
 ### Snapshots
 
 ```rust
-use vast_rs::api::CreateSnapshot;
+use vast::api::CreateSnapshot;
 
 let snaps = client.snapshots().list().await?;
 
@@ -235,7 +235,7 @@ let snap = client.snapshots().create(&CreateSnapshot {
 ### Error handling
 
 ```rust
-use vast_rs::Error;
+use vast::Error;
 
 match client.clusters().get(999).await {
     Ok(cluster) => println!("Found: {}", cluster.name),
@@ -320,11 +320,11 @@ VMS_ADDRESS=vms.example.com VMS_TOKEN=<token> cargo test --features integration
 
 ## Mock client for consumer tests
 
-If you're building an application or library on top of `vast-rs`, you can use `vast_rs::mock::MockVastClient` to unit-test code that takes a `&VastClient` — no live cluster, no `wiremock` boilerplate. Enable the `mock` feature in your dev-dependencies:
+If you're building an application or library on top of `vast`, you can use `vast::mock::MockVastClient` to unit-test code that takes a `&VastClient` — no live cluster, no `wiremock` boilerplate. Enable the `mock` feature in your dev-dependencies:
 
 ```toml
 [dev-dependencies]
-vast-rs = { version = "0.1", features = ["mock"] }
+vast = { version = "0.1", features = ["mock"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -333,7 +333,7 @@ Then stub VMS responses with `json!` literals and exercise your code:
 
 ```rust
 use serde_json::json;
-use vast_rs::{VastClient, mock::MockVastClient};
+use vast::{VastClient, mock::MockVastClient};
 
 async fn count_online_clusters(client: &VastClient) -> usize {
     client.clusters().list().await.unwrap()
