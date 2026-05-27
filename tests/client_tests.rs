@@ -12,11 +12,7 @@ use vast::VastClient;
 
 /// Build a client with a custom retry budget and a near-zero backoff
 /// so retry-loop tests don't sit on real wall-clock sleeps.
-async fn setup_with_retry(
-    server: &MockServer,
-    token: &str,
-    max_attempts: u32,
-) -> VastClient {
+async fn setup_with_retry(server: &MockServer, token: &str, max_attempts: u32) -> VastClient {
     VastClient::builder()
         .address(server.uri())
         .token(token)
@@ -937,21 +933,23 @@ async fn get_retries_5xx_then_succeeds() {
     let server = MockServer::start().await;
     let client = setup_with_retry(&server, "t", 3).await;
 
-    // wiremock dispatches mocks in registration order, with later mocks
-    // taking priority — register the 200 first so the second request
-    // matches it after the 503 stub's `expect(1)` is satisfied.
+    // wiremock dispatches mocks in registration order, with the
+    // **earlier** mock taking precedence at equal priority — so
+    // register the 503 first (with `up_to_n_times(1)` so it stops
+    // matching after one hit) and the 200 second so the retry falls
+    // through to it.
     Mock::given(method("GET"))
         .and(path("/api/clusters/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
-        ])))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"detail": "transient"})))
+        .up_to_n_times(1)
         .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/clusters/"))
-        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"detail": "transient"})))
-        .up_to_n_times(1)
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
+        ])))
         .expect(1)
         .mount(&server)
         .await;
@@ -967,16 +965,20 @@ async fn get_retries_429_then_succeeds() {
     let server = MockServer::start().await;
     let client = setup_with_retry(&server, "t", 3).await;
 
+    // Register the 429 first so it wins the first request, then
+    // exhausts via `up_to_n_times(1)` and the retry falls through to
+    // the 200 mock. (Earlier-mounted mocks take precedence at equal
+    // priority in wiremock-rs.)
     Mock::given(method("GET"))
         .and(path("/api/clusters/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({"detail": "slow down"})))
+        .up_to_n_times(1)
         .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/clusters/"))
-        .respond_with(ResponseTemplate::new(429).set_body_json(json!({"detail": "slow down"})))
-        .up_to_n_times(1)
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
         .expect(1)
         .mount(&server)
         .await;
@@ -995,7 +997,9 @@ async fn get_does_not_retry_4xx() {
 
     Mock::given(method("GET"))
         .and(path("/api/clusters/1/"))
-        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"detail": "no such cluster"})))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(json!({"detail": "no such cluster"})),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1022,7 +1026,10 @@ async fn get_exhausts_attempts_then_returns_error() {
     let err = client.clusters().list().await.unwrap_err();
     // The error should reflect the final 503.
     let msg = format!("{err}");
-    assert!(msg.contains("503") || msg.contains("still bad"), "got: {msg}");
+    assert!(
+        msg.contains("503") || msg.contains("still bad"),
+        "got: {msg}"
+    );
     server.verify().await;
 }
 

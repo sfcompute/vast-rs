@@ -319,7 +319,11 @@ impl<'c> Clusters<'c> {
     }
     /// Stream clusters one at a time, fetching pages lazily.
     pub fn iter(&self) -> PaginatedIter<Cluster, PageParams> {
-        PaginatedIter::new(self.0.clone(), "clusters/".to_string(), PageParams::default())
+        PaginatedIter::new(
+            self.0.clone(),
+            "clusters/".to_string(),
+            PageParams::default(),
+        )
     }
     pub async fn get(&self, id: u64) -> Result<Cluster> {
         self.0.get(&format!("clusters/{id}/")).await
@@ -516,7 +520,11 @@ impl<'c> Volumes<'c> {
     }
     /// Stream volumes one at a time, fetching pages lazily.
     pub fn iter(&self) -> PaginatedIter<Volume, PageParams> {
-        PaginatedIter::new(self.0.clone(), "volumes/".to_string(), PageParams::default())
+        PaginatedIter::new(
+            self.0.clone(),
+            "volumes/".to_string(),
+            PageParams::default(),
+        )
     }
     /// Stream volumes one at a time with filter params, fetching pages lazily.
     pub fn iter_with_params(
