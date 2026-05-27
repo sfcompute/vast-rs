@@ -49,12 +49,18 @@ impl MockVastClient {
 
     /// Start a mock server with a specific API token. Use when your test
     /// asserts on the `Authorization` header.
+    ///
+    /// Retries are disabled (`.max_attempts(1)`) so stubbed `5xx` / `429`
+    /// responses surface deterministically on the first call instead of
+    /// silently retrying. Tests that want to exercise the retry loop
+    /// should build a client directly with [`VastClient::builder`].
     pub async fn with_token(token: impl Into<String>) -> Self {
         let server = MockServer::start().await;
         let client = VastClient::builder()
             .address(server.uri())
             .token(token)
             .danger_accept_invalid_certs(true)
+            .max_attempts(1)
             .build()
             .expect("mock client build never fails");
         Self { server, client }
@@ -62,6 +68,8 @@ impl MockVastClient {
 
     /// Start a mock server, pre-stub the JWT exchange, and authenticate via
     /// username/password. Pass `Some("name")` for tenant-admin flows.
+    ///
+    /// Like [`with_token`](Self::with_token), retries are disabled.
     pub async fn with_credentials(
         user: impl Into<String>,
         pass: impl Into<String>,
@@ -82,7 +90,8 @@ impl MockVastClient {
         let mut b = VastClient::builder()
             .address(server.uri())
             .credentials(user, pass)
-            .danger_accept_invalid_certs(true);
+            .danger_accept_invalid_certs(true)
+            .max_attempts(1);
         if let Some(t) = tenant {
             b = b.tenant(t);
         }

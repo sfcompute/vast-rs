@@ -2,11 +2,30 @@
 //! only has to populate fields we actually deserialize — everything else flows
 //! into `extra` and is invisible to the test.
 
+use std::time::Duration;
+
 use serde_json::json;
 use wiremock::matchers::{body_json, header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use vast::VastClient;
+
+/// Build a client with a custom retry budget and a near-zero backoff
+/// so retry-loop tests don't sit on real wall-clock sleeps.
+async fn setup_with_retry(
+    server: &MockServer,
+    token: &str,
+    max_attempts: u32,
+) -> VastClient {
+    VastClient::builder()
+        .address(server.uri())
+        .token(token)
+        .danger_accept_invalid_certs(true)
+        .max_attempts(max_attempts)
+        .retry_backoff(Duration::from_millis(1))
+        .build()
+        .unwrap()
+}
 
 async fn setup(token: &str) -> (MockServer, VastClient) {
     let server = MockServer::start().await;
@@ -609,7 +628,12 @@ async fn non_json_error_body_surfaces_in_message() {
     // A misconfigured gateway / upstream 5xx may return HTML or plain
     // text. Verify the raw body still flows into the error message
     // instead of being dropped on the floor.
-    let (server, client) = setup("t").await;
+    //
+    // Disable retries — this test is about how a single non-2xx
+    // response is parsed, not about retry behavior. Skipping retries
+    // keeps the test snappy.
+    let server = MockServer::start().await;
+    let client = setup_with_retry(&server, "t", 1).await;
     Mock::given(method("GET"))
         .and(path("/api/clusters/"))
         .respond_with(
@@ -631,7 +655,9 @@ async fn non_json_error_body_surfaces_in_message() {
 
 #[tokio::test]
 async fn empty_error_body_yields_http_status_message() {
-    let (server, client) = setup("t").await;
+    // No-retry setup for the same reason as above.
+    let server = MockServer::start().await;
+    let client = setup_with_retry(&server, "t", 1).await;
     Mock::given(method("GET"))
         .and(path("/api/clusters/"))
         .respond_with(ResponseTemplate::new(500))
@@ -897,5 +923,244 @@ async fn list_unwraps_unparseable_next_link_safely() {
 
     let clusters = client.clusters().list().await.unwrap();
     assert_eq!(clusters.len(), 1);
+    server.verify().await;
+}
+
+// ---------------------------------------------------------------------------
+// Retries
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_retries_5xx_then_succeeds() {
+    // First call: 503. Second call: 200 with body. list() should return
+    // the body after one retry; we observe both stubs firing exactly once.
+    let server = MockServer::start().await;
+    let client = setup_with_retry(&server, "t", 3).await;
+
+    // wiremock dispatches mocks in registration order, with later mocks
+    // taking priority — register the 200 first so the second request
+    // matches it after the 503 stub's `expect(1)` is satisfied.
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"detail": "transient"})))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let clusters = client.clusters().list().await.unwrap();
+    assert_eq!(clusters.len(), 1);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn get_retries_429_then_succeeds() {
+    // 429 (rate-limited) is in the retryable set alongside 5xx.
+    let server = MockServer::start().await;
+    let client = setup_with_retry(&server, "t", 3).await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({"detail": "slow down"})))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client.clusters().list().await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn get_does_not_retry_4xx() {
+    // 4xx other than 429 is treated as a real client error — no retry.
+    // (Auth 401 with refreshable credentials is a separate path with
+    // its own one-shot retry — covered by `jwt_401_invalidates_cache_...`.)
+    let server = MockServer::start().await;
+    let client = setup_with_retry(&server, "static", 3).await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/1/"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"detail": "no such cluster"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let err = client.clusters().get(1).await.unwrap_err();
+    assert!(err.is_not_found());
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn get_exhausts_attempts_then_returns_error() {
+    // 5xx that never recovers — after `max_attempts` tries we should
+    // surface the error to the caller, not loop forever.
+    let server = MockServer::start().await;
+    let client = setup_with_retry(&server, "t", 3).await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"detail": "still bad"})))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let err = client.clusters().list().await.unwrap_err();
+    // The error should reflect the final 503.
+    let msg = format!("{err}");
+    assert!(msg.contains("503") || msg.contains("still bad"), "got: {msg}");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn max_attempts_one_disables_retry() {
+    let server = MockServer::start().await;
+    let client = setup_with_retry(&server, "t", 1).await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1) // exactly one — no retries
+        .mount(&server)
+        .await;
+
+    let _ = client.clusters().list().await.unwrap_err();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn post_is_never_retried_even_on_5xx() {
+    // POST may be non-idempotent — we send it at most once regardless
+    // of the retry budget, so a flaky create endpoint surfaces the
+    // first failure rather than silently creating duplicates.
+    use vast::api::CreateUser;
+    let server = MockServer::start().await;
+    let client = setup_with_retry(&server, "t", 5).await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/users/"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"detail": "boom"})))
+        .expect(1) // exactly one
+        .mount(&server)
+        .await;
+
+    let _ = client
+        .users()
+        .create(&CreateUser {
+            name: "alice".into(),
+            uid: None,
+            email: None,
+            enabled: None,
+        })
+        .await
+        .unwrap_err();
+    server.verify().await;
+}
+
+// ---------------------------------------------------------------------------
+// PaginatedIter
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn iter_streams_items_across_pages() {
+    // Two-page DRF response; iter() should walk through every item
+    // without buffering the entire collection.
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(query_param_is_missing("page"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 3,
+            "next": "https://vms.example.com/api/clusters/?page=2",
+            "previous": null,
+            "results": [
+                { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
+                { "id": 2, "name": "b", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g2" },
+            ],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 3,
+            "next": null,
+            "previous": "https://vms.example.com/api/clusters/",
+            "results": [
+                { "id": 3, "name": "c", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g3" },
+            ],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut iter = client.clusters().iter();
+    let mut ids = Vec::new();
+    while let Some(item) = iter.next().await {
+        ids.push(item.unwrap().id);
+    }
+    assert_eq!(ids, vec![1, 2, 3]);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn iter_works_against_bare_array_responses() {
+    // Endpoints that don't paginate still flow through iter() — it
+    // yields the whole bare array, then returns None.
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
+            { "id": 2, "name": "b", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g2" },
+        ])))
+        .mount(&server)
+        .await;
+
+    let mut iter = client.clusters().iter();
+    let mut count = 0;
+    while let Some(item) = iter.next().await {
+        item.unwrap();
+        count += 1;
+    }
+    assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn iter_propagates_terminal_error_then_returns_none() {
+    // A page fetch that exhausts retries should surface as
+    // `Some(Err(_))` once; subsequent calls return `None` so the
+    // caller's `while let Some(...)` loop terminates cleanly without
+    // re-triggering the same failure.
+    let server = MockServer::start().await;
+    let client = setup_with_retry(&server, "t", 1).await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut iter = client.clusters().iter();
+    let first = iter.next().await.expect("expected Some(Err)");
+    assert!(first.is_err());
+    let second = iter.next().await;
+    assert!(second.is_none(), "iter should be terminal after error");
     server.verify().await;
 }

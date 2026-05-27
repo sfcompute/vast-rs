@@ -140,6 +140,87 @@ fn page_from_link(link: Option<&str>) -> Option<u32> {
         .and_then(|(_, v)| v.parse().ok())
 }
 
+/// Async iterator over a paginated list endpoint. Pages are fetched
+/// lazily as items are consumed, so memory usage stays bounded to one
+/// page regardless of collection size — useful when iterating over very
+/// large quota or view sets without buffering them all.
+///
+/// Use [`next`](Self::next) to drive iteration:
+///
+/// ```rust,no_run
+/// # use vast::VastClient;
+/// # async fn run(client: VastClient) -> vast::Result<()> {
+/// let mut iter = client.quotas().iter();
+/// while let Some(quota) = iter.next().await {
+///     let quota = quota?;
+///     println!("{}: {}", quota.id, quota.path);
+/// }
+/// # Ok(()) }
+/// ```
+///
+/// Retries from the underlying [`VastClient`] apply to each page fetch
+/// independently, so a transient blip in the middle of iteration
+/// recovers automatically. If retries are exhausted on a page, the
+/// iterator yields `Some(Err(_))` and then `None` on subsequent calls.
+pub struct PaginatedIter<T, Q> {
+    client: VastClient,
+    path: String,
+    params: Q,
+    buffer: std::collections::VecDeque<T>,
+    done: bool,
+}
+
+impl<T, Q> PaginatedIter<T, Q>
+where
+    T: serde::de::DeserializeOwned,
+    Q: Serialize + Paginate,
+{
+    pub(crate) fn new(client: VastClient, path: String, params: Q) -> Self {
+        Self {
+            client,
+            path,
+            params,
+            buffer: std::collections::VecDeque::new(),
+            done: false,
+        }
+    }
+
+    /// Yield the next item, fetching another page from the VMS if the
+    /// in-memory buffer is empty. Returns `None` when the collection
+    /// is exhausted. On error, returns `Some(Err(_))` once and then
+    /// `None` — the iterator transitions to a terminal state so the
+    /// caller doesn't accidentally re-trigger the same failure in a
+    /// tight loop.
+    pub async fn next(&mut self) -> Option<Result<T>> {
+        loop {
+            if let Some(item) = self.buffer.pop_front() {
+                return Some(Ok(item));
+            }
+            if self.done {
+                return None;
+            }
+            let resp: PaginatedResponse<T> =
+                match self.client.get_with_query(&self.path, &self.params).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.done = true;
+                        return Some(Err(e));
+                    }
+                };
+            let page = resp.into_page();
+            self.buffer.extend(page.items);
+            match page.next_page {
+                Some(n) => self.params.set_page(n),
+                None => self.done = true,
+            }
+            // Loop: if the buffer now has items, pop one; if it's still
+            // empty and `done`, return None; if empty and more pages to
+            // fetch (rare — server returned an empty intermediate
+            // page), the next iteration fetches the next page.
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Macro: emit list/list_paged/get/delete (and create/update/delete_with_body
 // when needed). Every list endpoint gets two flavors:
@@ -150,7 +231,7 @@ fn page_from_link(link: Option<&str>) -> Option<u32> {
 // ---------------------------------------------------------------------------
 
 macro_rules! crud {
-    // Full CRUD: list/list_paged/get/create/update/delete.
+    // Full CRUD: list/list_paged/iter/get/create/update/delete.
     ($Handle:ident, $Resource:ty, $Create:ty, $Update:ty, $path:expr) => {
         pub struct $Handle<'c>(pub(crate) &'c VastClient);
         impl<'c> $Handle<'c> {
@@ -159,6 +240,11 @@ macro_rules! crud {
             }
             pub async fn list_paged(&self, params: &PageParams) -> Result<Page<$Resource>> {
                 self.0.get_page($path, params).await
+            }
+            /// Stream items one at a time, fetching pages lazily as the
+            /// in-memory buffer drains. See [`PaginatedIter`].
+            pub fn iter(&self) -> PaginatedIter<$Resource, PageParams> {
+                PaginatedIter::new(self.0.clone(), $path.to_string(), PageParams::default())
             }
             pub async fn get(&self, id: u64) -> Result<$Resource> {
                 self.0.get(&format!("{}{id}/", $path)).await
@@ -183,6 +269,11 @@ macro_rules! crud {
             }
             pub async fn list_paged(&self, params: &PageParams) -> Result<Page<$Resource>> {
                 self.0.get_page($path, params).await
+            }
+            /// Stream items one at a time, fetching pages lazily as the
+            /// in-memory buffer drains. See [`PaginatedIter`].
+            pub fn iter(&self) -> PaginatedIter<$Resource, PageParams> {
+                PaginatedIter::new(self.0.clone(), $path.to_string(), PageParams::default())
             }
             pub async fn get(&self, id: u64) -> Result<$Resource> {
                 self.0.get(&format!("{}{id}/", $path)).await
@@ -225,6 +316,10 @@ impl<'c> Clusters<'c> {
     }
     pub async fn list_paged(&self, params: &PageParams) -> Result<Page<Cluster>> {
         self.0.get_page("clusters/", params).await
+    }
+    /// Stream clusters one at a time, fetching pages lazily.
+    pub fn iter(&self) -> PaginatedIter<Cluster, PageParams> {
+        PaginatedIter::new(self.0.clone(), "clusters/".to_string(), PageParams::default())
     }
     pub async fn get(&self, id: u64) -> Result<Cluster> {
         self.0.get(&format!("clusters/{id}/")).await
@@ -295,6 +390,18 @@ impl<'c> Nodes<'c> {
     }
     pub async fn list_paged_with_params(&self, params: &ListNodesParams) -> Result<Page<Node>> {
         self.0.get_page("nodes/", params).await
+    }
+    /// Stream nodes one at a time, fetching pages lazily.
+    pub fn iter(&self) -> PaginatedIter<Node, PageParams> {
+        PaginatedIter::new(self.0.clone(), "nodes/".to_string(), PageParams::default())
+    }
+    /// Stream nodes one at a time with filter params (e.g. `cluster_id`),
+    /// fetching pages lazily.
+    pub fn iter_with_params(
+        &self,
+        params: &ListNodesParams,
+    ) -> PaginatedIter<Node, ListNodesParams> {
+        PaginatedIter::new(self.0.clone(), "nodes/".to_string(), params.clone())
     }
     pub async fn get(&self, id: u64) -> Result<Node> {
         self.0.get(&format!("nodes/{id}/")).await
@@ -406,6 +513,17 @@ impl<'c> Volumes<'c> {
     }
     pub async fn list_paged_with_params(&self, p: &ListVolumesParams) -> Result<Page<Volume>> {
         self.0.get_page("volumes/", p).await
+    }
+    /// Stream volumes one at a time, fetching pages lazily.
+    pub fn iter(&self) -> PaginatedIter<Volume, PageParams> {
+        PaginatedIter::new(self.0.clone(), "volumes/".to_string(), PageParams::default())
+    }
+    /// Stream volumes one at a time with filter params, fetching pages lazily.
+    pub fn iter_with_params(
+        &self,
+        p: &ListVolumesParams,
+    ) -> PaginatedIter<Volume, ListVolumesParams> {
+        PaginatedIter::new(self.0.clone(), "volumes/".to_string(), p.clone())
     }
     pub async fn get(&self, id: u64) -> Result<Volume> {
         self.0.get(&format!("volumes/{id}/")).await

@@ -32,6 +32,13 @@ struct Inner {
     /// write guard across the credential exchange — that gives us
     /// single-flight initialisation without an extra primitive.
     cached_token: RwLock<Option<SecretString>>,
+    /// Max attempts per **GET** request (initial + retries). POST /
+    /// PATCH / DELETE are never retried because they may be
+    /// non-idempotent.
+    max_attempts: u32,
+    /// Backoff base. Sleeps grow as `base * 2^(attempt-1)` between
+    /// attempts (1s → 2s → 4s with the default base).
+    retry_backoff: Duration,
 }
 
 impl VastClient {
@@ -220,7 +227,63 @@ impl VastClient {
         Q: Serialize + ?Sized,
         B: Serialize + ?Sized,
     {
-        let resp = self.send_once(method.clone(), path, query, body).await?;
+        // GETs are idempotent so we retry them on transient failures.
+        // POST/PATCH/DELETE may be non-idempotent and are sent at most
+        // once. The 401 cache-invalidate-and-retry below is independent
+        // of this budget — it's a single logical retry triggered by a
+        // known-safe condition (the VMS rejects with 401 before any
+        // handler runs).
+        let max_attempts = if method == Method::GET {
+            self.inner.max_attempts.max(1)
+        } else {
+            1
+        };
+        let backoff_base = self.inner.retry_backoff;
+
+        let mut attempt: u32 = 0;
+        let resp = loop {
+            attempt += 1;
+            match self.send_once(method.clone(), path, query, body).await {
+                Ok(resp) => {
+                    // Retry 5xx and 429 (rate-limited) responses if we
+                    // have budget; everything else (2xx, 3xx, 4xx other
+                    // than 429) flows through to the 401 check below.
+                    let s = resp.status();
+                    let retryable_status =
+                        s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                    if retryable_status && attempt < max_attempts {
+                        let delay = backoff_base * 2u32.pow(attempt - 1);
+                        tracing::warn!(
+                            attempt,
+                            max_attempts,
+                            http.method = %method,
+                            http.path = %path,
+                            http.status = s.as_u16(),
+                            retry_in_ms = delay.as_millis() as u64,
+                            "request returned retryable status; sleeping and retrying",
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    break resp;
+                }
+                Err(e) if attempt < max_attempts => {
+                    let delay = backoff_base * 2u32.pow(attempt - 1);
+                    tracing::warn!(
+                        attempt,
+                        max_attempts,
+                        http.method = %method,
+                        http.path = %path,
+                        retry_in_ms = delay.as_millis() as u64,
+                        error = %e,
+                        "request failed at transport layer; sleeping and retrying",
+                    );
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        };
 
         // The VMS gates all routes behind the auth middleware, so 401 is
         // returned before any handler runs — retrying with a fresh JWT is
@@ -360,6 +423,12 @@ async fn api_error(status: u16, resp: reqwest::Response) -> Error {
 
 const API_BASE_PATH: &str = "/api/";
 
+/// Default total attempts (initial + retries) per GET request. Applies
+/// only to GETs; POST / PATCH / DELETE are sent at most once.
+const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+/// Default backoff base. Successive retries wait `BASE * 2^(attempt-1)`.
+const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+
 /// Builder for [`VastClient`]. Obtain via [`VastClient::builder`].
 #[derive(Default, Debug)]
 pub struct Builder {
@@ -368,6 +437,8 @@ pub struct Builder {
     tenant: Option<String>,
     accept_invalid_certs: bool,
     timeout: Option<Duration>,
+    max_attempts: Option<u32>,
+    retry_backoff: Option<Duration>,
 }
 
 impl Builder {
@@ -380,7 +451,7 @@ impl Builder {
 
     /// Authenticate with a long-lived API token (recommended for automation).
     pub fn token(mut self, token: impl Into<String>) -> Self {
-        self.auth = Some(Auth::Token(SecretString::new(token.into())));
+        self.auth = Some(Auth::Token(SecretString::from(token.into())));
         self
     }
 
@@ -389,7 +460,7 @@ impl Builder {
     pub fn credentials(mut self, user: impl Into<String>, pass: impl Into<String>) -> Self {
         self.auth = Some(Auth::Password {
             username: user.into(),
-            password: SecretString::new(pass.into()),
+            password: SecretString::from(pass.into()),
             tenant: None,
         });
         self
@@ -411,6 +482,26 @@ impl Builder {
     /// Per-request timeout (default: 30 seconds).
     pub fn timeout(mut self, t: Duration) -> Self {
         self.timeout = Some(t);
+        self
+    }
+
+    /// Maximum number of attempts per **GET** request (initial + retries).
+    /// Default 3. Set to 1 to disable retries.
+    ///
+    /// Retries fire on transport-level failures (network, timeout) and
+    /// on retryable status codes (`5xx`, `429`). POST / PATCH / DELETE
+    /// are sent at most once regardless of this setting, since they
+    /// may be non-idempotent.
+    pub fn max_attempts(mut self, n: u32) -> Self {
+        self.max_attempts = Some(n.max(1));
+        self
+    }
+
+    /// Backoff base for retries. Successive retries wait
+    /// `base * 2^(attempt-1)` — with the default 1-second base, that's
+    /// 1s, 2s, 4s, ... Default: 1 second.
+    pub fn retry_backoff(mut self, base: Duration) -> Self {
+        self.retry_backoff = Some(base);
         self
     }
 
@@ -493,6 +584,8 @@ impl Builder {
                 base,
                 auth,
                 cached_token: RwLock::new(None),
+                max_attempts: self.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS),
+                retry_backoff: self.retry_backoff.unwrap_or(DEFAULT_RETRY_BACKOFF),
             }),
         })
     }

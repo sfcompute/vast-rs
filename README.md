@@ -259,8 +259,30 @@ let client = VastClient::builder()
     .tenant("acme")                               // required for tenant admin accounts
     .timeout(Duration::from_secs(60))             // default: 30s
     .danger_accept_invalid_certs(true)            // for self-signed certs; dev only
+    .max_attempts(3)                              // GET retries (default: 3, set 1 to disable)
+    .retry_backoff(Duration::from_secs(1))        // exponential backoff base (default: 1s)
     .build()?;
 ```
+
+### Retries
+
+`GET` requests are retried automatically on transient failures — transport-level errors (network blips, timeouts) and retryable HTTP statuses (`5xx`, `429`). `POST` / `PATCH` / `DELETE` are sent at most once regardless of the retry budget, since they may be non-idempotent.
+
+The default budget is 3 attempts with exponential backoff (`base * 2^(attempt-1)`, so 1s then 2s with the default base). Set `.max_attempts(1)` to disable retries entirely; `.retry_backoff(Duration::from_millis(100))` to tighten the loop for latency-sensitive workloads.
+
+### Streaming with `iter()`
+
+For very large collections, `iter()` exposes a lazy async iterator that fetches one page at a time. Memory stays bounded to a single page rather than the whole `Vec<T>`:
+
+```rust
+let mut iter = client.quotas().iter();
+while let Some(quota) = iter.next().await {
+    let quota = quota?;
+    process(&quota);
+}
+```
+
+Filter params work the same way via `iter_with_params` on resources that support them (e.g. `client.nodes().iter_with_params(&ListNodesParams { cluster_id: Some(7), ..Default::default() })`). Retries are applied per page fetch, so a transient blip mid-iteration recovers automatically.
 
 ---
 

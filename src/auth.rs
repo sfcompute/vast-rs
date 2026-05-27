@@ -38,10 +38,10 @@ impl Auth {
     /// (+ optional `VMS_TENANT`).
     pub(crate) fn from_env() -> Option<Self> {
         if let Ok(tok) = std::env::var("VMS_TOKEN") {
-            return Some(Auth::Token(SecretString::new(tok)));
+            return Some(Auth::Token(SecretString::from(tok)));
         }
         let username = std::env::var("VMS_USER").ok()?;
-        let password = SecretString::new(std::env::var("VMS_PASSWORD").ok()?);
+        let password = SecretString::from(std::env::var("VMS_PASSWORD").ok()?);
         let tenant = std::env::var("VMS_TENANT").ok();
         Some(Auth::Password {
             username,
@@ -103,7 +103,7 @@ impl Auth {
                         "token request failed ({status}): {body}{hint}"
                     )));
                 }
-                Ok(SecretString::new(
+                Ok(SecretString::from(
                     resp.json::<TokenResponse>().await?.access,
                 ))
             }
