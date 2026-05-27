@@ -44,7 +44,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: cargo clippy (all targets, all features)
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
     name: test (${{ matrix.features }})
@@ -62,11 +62,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo build
-        run: cargo build --workspace --all-targets --locked ${{ matrix.flags }}
+        run: cargo build --workspace --all-targets ${{ matrix.flags }}
       - name: cargo test
-        run: cargo test --workspace --all-targets --locked ${{ matrix.flags }}
+        run: cargo test --workspace --all-targets ${{ matrix.flags }}
       - name: cargo test --doc
-        run: cargo test --workspace --doc --locked ${{ matrix.flags }}
+        run: cargo test --workspace --doc ${{ matrix.flags }}
 
   docs:
     name: docs
@@ -84,4 +84,4 @@ jobs:
           # Match docs.rs configuration in Cargo.toml so doc(cfg) attributes
           # render the same way on CI as on the published docs.
           RUSTDOCFLAGS: --cfg docsrs -D warnings
-        run: cargo doc --workspace --all-features --no-deps --locked
+        run: cargo doc --workspace --all-features --no-deps
