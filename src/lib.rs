@@ -63,6 +63,10 @@
     clippy::print_stdout,
     clippy::print_stderr
 )]
+// Enable the unstable `doc(cfg(...))` attribute when building on docs.rs
+// (or locally with `RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc`).
+// Requires nightly; on stable the `cfg_attr(docsrs, ...)` gate keeps it inert.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod api;
 mod auth;

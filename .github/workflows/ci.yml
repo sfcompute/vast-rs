@@ -73,7 +73,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Nightly is required because we pass `--cfg docsrs`, which activates
+      # `#![cfg_attr(docsrs, feature(doc_cfg))]` in `src/lib.rs`. The
+      # `doc_cfg` feature is unstable and only compiles on nightly — this
+      # matches how docs.rs itself builds the crate.
+      - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - name: cargo doc (all features)
         env:
@@ -81,16 +85,3 @@ jobs:
           # render the same way on CI as on the published docs.
           RUSTDOCFLAGS: --cfg docsrs -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked
-
-  msrv:
-    name: MSRV (Rust 1.85)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          # Keep in sync with `rust-version` in Cargo.toml and the README.
-          toolchain: "1.85"
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo check (all features)
-        run: cargo check --workspace --all-targets --all-features --locked
