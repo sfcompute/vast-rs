@@ -90,6 +90,7 @@ let client = vast::VastClient::from_env()?;
 | `VMS_USER`     | Username for credential-based auth                                 |
 | `VMS_PASSWORD` | Password for credential-based auth                                 |
 | `VMS_TENANT`   | Tenant name — **required for tenant admin accounts**, omit for cluster admins |
+| `VMS_DANGER_ACCEPT_INVALID_CERTS` | Set to `1` / `true` / `yes` / `on` to disable TLS certificate validation. **Development / self-signed VMS deployments only.** Equivalent to `.danger_accept_invalid_certs(true)` on the builder. |
 
 ---
 

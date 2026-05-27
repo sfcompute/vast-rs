@@ -416,14 +416,31 @@ impl Builder {
 
     /// Build from environment variables: `VMS_ADDRESS` plus either `VMS_TOKEN`
     /// or `VMS_USER`+`VMS_PASSWORD` (and optional `VMS_TENANT`).
+    ///
+    /// Also reads `VMS_DANGER_ACCEPT_INVALID_CERTS` — set to a truthy
+    /// value (`"1"`, `"true"`, `"yes"`, `"on"`, case-insensitive) to
+    /// disable TLS certificate validation. **Development / self-signed
+    /// VMS deployments only.** Equivalent to calling
+    /// [`danger_accept_invalid_certs(true)`](Self::danger_accept_invalid_certs)
+    /// on the builder.
     pub fn from_env() -> Result<Self> {
         let address = std::env::var("VMS_ADDRESS")
             .map_err(|_| Error::Config("VMS_ADDRESS must be set".into()))?;
         let auth = Auth::from_env()
             .ok_or_else(|| Error::Config("set VMS_TOKEN or VMS_USER + VMS_PASSWORD".into()))?;
+        let accept_invalid_certs = std::env::var("VMS_DANGER_ACCEPT_INVALID_CERTS")
+            .ok()
+            .map(|v| truthy(&v))
+            .unwrap_or(false);
+        if accept_invalid_certs {
+            tracing::warn!(
+                "VMS_DANGER_ACCEPT_INVALID_CERTS is set — TLS certificate validation is disabled"
+            );
+        }
         Ok(Self {
             address: Some(address),
             auth: Some(auth),
+            accept_invalid_certs,
             ..Default::default()
         })
     }
@@ -498,6 +515,18 @@ fn normalize_base_url(addr: &str) -> Result<Url> {
         parsed.port().map(|p| format!(":{p}")).unwrap_or_default()
     );
     Ok(Url::parse(&format!("{host}{API_BASE_PATH}"))?)
+}
+
+/// Parse an env-var-style boolean. Accepts the usual unix-ish synonyms
+/// (`"1"`, `"true"`, `"yes"`, `"on"`, case-insensitive); everything else
+/// — including the explicit negatives `"0"` / `"false"` and any
+/// unrecognized junk — is treated as `false`. Whitespace is trimmed so
+/// that a YAML-rendered ` true\n` from a k8s ConfigMap still works.
+fn truthy(v: &str) -> bool {
+    matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 #[cfg(test)]
@@ -575,5 +604,21 @@ mod tests {
             !dbg.contains("super-secret-token-value"),
             "token leaked into Debug output: {dbg}"
         );
+    }
+
+    #[test]
+    fn truthy_accepts_common_yes_synonyms() {
+        for v in [
+            "1", "true", "TRUE", "True", "yes", "YES", "on", "ON", " true ", "\ttrue\n",
+        ] {
+            assert!(truthy(v), "{v:?} should be truthy");
+        }
+    }
+
+    #[test]
+    fn truthy_rejects_no_synonyms_and_junk() {
+        for v in ["", "0", "false", "FALSE", "no", "off", "anything-else", " "] {
+            assert!(!truthy(v), "{v:?} should not be truthy");
+        }
     }
 }

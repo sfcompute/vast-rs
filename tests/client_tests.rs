@@ -166,7 +166,10 @@ async fn jwt_401_invalidates_cache_and_refreshes_credentials() {
 
     let client = setup_credentials(&server, "alice", "pw", None).await;
     let err = client.clusters().list().await.unwrap_err();
-    assert!(err.is_unauthorized(), "expected 401 after retry; got {err:?}");
+    assert!(
+        err.is_unauthorized(),
+        "expected 401 after retry; got {err:?}"
+    );
 
     server.verify().await;
 }

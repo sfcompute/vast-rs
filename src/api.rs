@@ -293,10 +293,7 @@ impl<'c> Nodes<'c> {
     pub async fn list_with_params(&self, params: &ListNodesParams) -> Result<Vec<Node>> {
         self.0.list_all("nodes/", params.clone()).await
     }
-    pub async fn list_paged_with_params(
-        &self,
-        params: &ListNodesParams,
-    ) -> Result<Page<Node>> {
+    pub async fn list_paged_with_params(&self, params: &ListNodesParams) -> Result<Page<Node>> {
         self.0.get_page("nodes/", params).await
     }
     pub async fn get(&self, id: u64) -> Result<Node> {
@@ -407,10 +404,7 @@ impl<'c> Volumes<'c> {
     pub async fn list_with_params(&self, p: &ListVolumesParams) -> Result<Vec<Volume>> {
         self.0.list_all("volumes/", p.clone()).await
     }
-    pub async fn list_paged_with_params(
-        &self,
-        p: &ListVolumesParams,
-    ) -> Result<Page<Volume>> {
+    pub async fn list_paged_with_params(&self, p: &ListVolumesParams) -> Result<Page<Volume>> {
         self.0.get_page("volumes/", p).await
     }
     pub async fn get(&self, id: u64) -> Result<Volume> {
