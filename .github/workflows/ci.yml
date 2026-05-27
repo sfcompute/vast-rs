@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same ref/PR when a new commit is pushed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  # Fail fast on any rustc warning across the build.
+  RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy (all targets, all features)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: test (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - features: default
+            flags: ""
+          - features: mock
+            flags: "--features mock"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build
+        run: cargo build --workspace --all-targets --locked ${{ matrix.flags }}
+      - name: cargo test
+        run: cargo test --workspace --all-targets --locked ${{ matrix.flags }}
+      - name: cargo test --doc
+        run: cargo test --workspace --doc --locked ${{ matrix.flags }}
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc (all features)
+        env:
+          # Match docs.rs configuration in Cargo.toml so doc(cfg) attributes
+          # render the same way on CI as on the published docs.
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
+
+  msrv:
+    name: MSRV (Rust 1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Keep in sync with `rust-version` in Cargo.toml and the README.
+          toolchain: "1.85"
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (all features)
+        run: cargo check --workspace --all-targets --all-features --locked

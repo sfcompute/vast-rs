@@ -111,6 +111,42 @@ impl VastClient {
         self.send(Method::GET, path, Some(query), None::<&()>).await
     }
 
+    /// Auto-paginate a list endpoint, returning every item across all
+    /// pages. Handles both the DRF paginated wrapper and the bare-array
+    /// shape via [`api::PaginatedResponse`].
+    ///
+    /// Takes `params` by value so the helper can advance the page number
+    /// in-place between requests (requires `Q: Paginate`).
+    pub(crate) async fn list_all<T, Q>(&self, path: &str, params: Q) -> Result<Vec<T>>
+    where
+        T: DeserializeOwned,
+        Q: Serialize + api::Paginate,
+    {
+        let mut params = params;
+        let mut all = Vec::new();
+        loop {
+            let resp: api::PaginatedResponse<T> = self.get_with_query(path, &params).await?;
+            let page = resp.into_page();
+            all.extend(page.items);
+            match page.next_page {
+                Some(n) => params.set_page(n),
+                None => return Ok(all),
+            }
+        }
+    }
+
+    /// Fetch a single page of a list endpoint, returning the page
+    /// metadata (`count`, `next_page`, `previous_page`) alongside the
+    /// items. Handles both response shapes.
+    pub(crate) async fn get_page<T, Q>(&self, path: &str, params: &Q) -> Result<api::Page<T>>
+    where
+        T: DeserializeOwned,
+        Q: Serialize + ?Sized,
+    {
+        let resp: api::PaginatedResponse<T> = self.get_with_query(path, params).await?;
+        Ok(resp.into_page())
+    }
+
     pub(crate) async fn post<T: DeserializeOwned, B: Serialize + ?Sized>(
         &self,
         path: &str,

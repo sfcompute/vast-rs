@@ -3,7 +3,7 @@
 //! into `extra` and is invisible to the test.
 
 use serde_json::json;
-use wiremock::matchers::{body_json, header, method, path, query_param};
+use wiremock::matchers::{body_json, header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use vast::VastClient;
@@ -394,6 +394,7 @@ async fn nodes_list_with_params_serialises_query_string() {
     let params = ListNodesParams {
         cluster_id: Some(7),
         state: Some("ONLINE".into()),
+        ..Default::default()
     };
     client.nodes().list_with_params(&params).await.unwrap();
     server.verify().await;
@@ -690,4 +691,208 @@ fn builder_normalises_address_without_scheme() {
         .token("x")
         .build()
         .unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Pagination
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_handles_drf_paginated_response_single_page() {
+    // A single-page DRF response (next/previous both null) should be
+    // unwrapped into the same Vec<T> a bare-array response produces.
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2,
+            "next": null,
+            "previous": null,
+            "results": [
+                { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
+                { "id": 2, "name": "b", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g2" },
+            ],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let clusters = client.clusters().list().await.unwrap();
+    assert_eq!(clusters.len(), 2);
+    assert_eq!(clusters[0].name, "a");
+    assert_eq!(clusters[1].name, "b");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn list_auto_paginates_across_pages() {
+    // The first response carries a `next` link pointing at page 2;
+    // list() should follow it and accumulate items from both pages.
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(query_param_is_missing("page"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 3,
+            "next": "https://vms.example.com/api/clusters/?page=2",
+            "previous": null,
+            "results": [
+                { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
+                { "id": 2, "name": "b", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g2" },
+            ],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 3,
+            "next": null,
+            "previous": "https://vms.example.com/api/clusters/",
+            "results": [
+                { "id": 3, "name": "c", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g3" },
+            ],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let clusters = client.clusters().list().await.unwrap();
+    assert_eq!(clusters.len(), 3);
+    assert_eq!(clusters[0].id, 1);
+    assert_eq!(clusters[2].id, 3);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn list_paged_exposes_page_metadata() {
+    use vast::api::PageParams;
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(query_param("page_size", "10"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 42,
+            "next": "https://vms.example.com/api/clusters/?page=2",
+            "previous": null,
+            "results": [
+                { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
+            ],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let page = client
+        .clusters()
+        .list_paged(&PageParams {
+            page: None,
+            page_size: Some(10),
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.count, Some(42));
+    assert_eq!(page.next_page, Some(2));
+    assert_eq!(page.previous_page, None);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn list_paged_with_bare_array_has_none_metadata() {
+    // Endpoints that don't paginate still work through list_paged:
+    // items are populated, metadata is None.
+    use vast::api::PageParams;
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
+        ])))
+        .mount(&server)
+        .await;
+
+    let page = client
+        .clusters()
+        .list_paged(&PageParams::default())
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.count, None);
+    assert_eq!(page.next_page, None);
+    assert_eq!(page.previous_page, None);
+}
+
+#[tokio::test]
+async fn list_with_params_paginates_while_preserving_filters() {
+    // Filter params must be sent on every page request, not only the
+    // first — otherwise page 2 would return unfiltered results.
+    use vast::api::ListNodesParams;
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/nodes/"))
+        .and(query_param("cluster_id", "7"))
+        .and(query_param("page_size", "100"))
+        .and(query_param_is_missing("page"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2,
+            "next": "https://vms.example.com/api/nodes/?cluster_id=7&page=2&page_size=100",
+            "previous": null,
+            "results": [{ "id": 1, "name": "n1" }],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/nodes/"))
+        .and(query_param("cluster_id", "7"))
+        .and(query_param("page", "2"))
+        .and(query_param("page_size", "100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2,
+            "next": null,
+            "previous": "https://vms.example.com/api/nodes/?cluster_id=7&page_size=100",
+            "results": [{ "id": 2, "name": "n2" }],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let nodes = client
+        .nodes()
+        .list_with_params(&ListNodesParams {
+            cluster_id: Some(7),
+            page_size: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(nodes.len(), 2);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn list_unwraps_unparseable_next_link_safely() {
+    // If the VMS returns a `next` link we can't parse a page number out
+    // of, list() should stop instead of looping forever or panicking.
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1,
+            "next": "not-a-valid-url",
+            "previous": null,
+            "results": [
+                { "id": 1, "name": "a", "sw_version": "5.0", "enabled": true, "state": "ONLINE", "guid": "g1" },
+            ],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let clusters = client.clusters().list().await.unwrap();
+    assert_eq!(clusters.len(), 1);
+    server.verify().await;
 }

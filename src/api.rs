@@ -35,16 +35,130 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Macro: emit list/get/delete (and create/update/delete_with_body when needed)
+// Pagination
+// ---------------------------------------------------------------------------
+
+/// Query parameters for paginated list endpoints. Pass to a resource's
+/// `list_paged` method to fetch one specific page or set a page size.
+///
+/// `list()` accepts pagination implicitly — it auto-paginates and returns
+/// the full collection regardless of whether the endpoint paginates the
+/// response.
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct PageParams {
+    /// 1-indexed page number. Defaults to the server's first page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+    /// Items per page. Defaults to the server's `default_page_size`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u32>,
+}
+
+/// One page of results from a list endpoint.
+///
+/// For endpoints that return a DRF paginated wrapper (`{count, next,
+/// previous, results}`), all fields are populated. For endpoints that
+/// return a bare JSON array, `count`/`next_page`/`previous_page` are
+/// `None` and `items` holds the entire collection.
+#[derive(Debug, Clone)]
+pub struct Page<T> {
+    /// Items on this page.
+    pub items: Vec<T>,
+    /// Total count across all pages, when known.
+    pub count: Option<usize>,
+    /// Page number of the next page, or `None` on the last page.
+    pub next_page: Option<u32>,
+    /// Page number of the previous page, or `None` on the first page.
+    pub previous_page: Option<u32>,
+}
+
+/// Trait for query-parameter structs that can carry a page number, so
+/// the auto-pagination helper can advance through pages without knowing
+/// the concrete params type. Implemented by [`PageParams`] and the
+/// filter structs for resources that support filtered listing
+/// (e.g. [`ListNodesParams`], [`ListVolumesParams`]).
+pub trait Paginate {
+    fn set_page(&mut self, page: u32);
+}
+
+impl Paginate for PageParams {
+    fn set_page(&mut self, page: u32) {
+        self.page = Some(page);
+    }
+}
+
+/// Untagged enum that decodes both the DRF paginated wrapper and a bare
+/// array, so callers don't have to care which shape an endpoint returns
+/// on a given cluster version or configuration.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum PaginatedResponse<T> {
+    /// Standard DRF wrapper: `{count, next, previous, results}`.
+    Paginated {
+        count: usize,
+        next: Option<String>,
+        previous: Option<String>,
+        results: Vec<T>,
+    },
+    /// Plain array (some endpoints don't paginate by default).
+    Bare(Vec<T>),
+}
+
+impl<T> PaginatedResponse<T> {
+    pub(crate) fn into_page(self) -> Page<T> {
+        match self {
+            Self::Bare(items) => Page {
+                items,
+                count: None,
+                next_page: None,
+                previous_page: None,
+            },
+            Self::Paginated {
+                count,
+                next,
+                previous,
+                results,
+            } => Page {
+                items: results,
+                count: Some(count),
+                next_page: page_from_link(next.as_deref()),
+                previous_page: page_from_link(previous.as_deref()),
+            },
+        }
+    }
+}
+
+/// Extract `?page=N` from a paginated-response link URL. Tolerates an
+/// unparseable URL by returning `None` — the auto-pagination loop will
+/// then stop, which is the right thing if the server gave us a link we
+/// can't follow.
+fn page_from_link(link: Option<&str>) -> Option<u32> {
+    let link = link?;
+    let url = url::Url::parse(link).ok()?;
+    url.query_pairs()
+        .find(|(k, _)| k == "page")
+        .and_then(|(_, v)| v.parse().ok())
+}
+
+// ---------------------------------------------------------------------------
+// Macro: emit list/list_paged/get/delete (and create/update/delete_with_body
+// when needed). Every list endpoint gets two flavors:
+//
+//   * `list()`             — auto-paginates and returns the whole collection
+//   * `list_paged(params)` — fetches one specific page
+//
 // ---------------------------------------------------------------------------
 
 macro_rules! crud {
-    // Full CRUD: list/get/create/update/delete.
+    // Full CRUD: list/list_paged/get/create/update/delete.
     ($Handle:ident, $Resource:ty, $Create:ty, $Update:ty, $path:expr) => {
         pub struct $Handle<'c>(pub(crate) &'c VastClient);
         impl<'c> $Handle<'c> {
             pub async fn list(&self) -> Result<Vec<$Resource>> {
-                self.0.get($path).await
+                self.0.list_all($path, PageParams::default()).await
+            }
+            pub async fn list_paged(&self, params: &PageParams) -> Result<Page<$Resource>> {
+                self.0.get_page($path, params).await
             }
             pub async fn get(&self, id: u64) -> Result<$Resource> {
                 self.0.get(&format!("{}{id}/", $path)).await
@@ -65,7 +179,10 @@ macro_rules! crud {
         pub struct $Handle<'c>(pub(crate) &'c VastClient);
         impl<'c> $Handle<'c> {
             pub async fn list(&self) -> Result<Vec<$Resource>> {
-                self.0.get($path).await
+                self.0.list_all($path, PageParams::default()).await
+            }
+            pub async fn list_paged(&self, params: &PageParams) -> Result<Page<$Resource>> {
+                self.0.get_page($path, params).await
             }
             pub async fn get(&self, id: u64) -> Result<$Resource> {
                 self.0.get(&format!("{}{id}/", $path)).await
@@ -104,7 +221,10 @@ pub struct Cluster {
 pub struct Clusters<'c>(pub(crate) &'c VastClient);
 impl<'c> Clusters<'c> {
     pub async fn list(&self) -> Result<Vec<Cluster>> {
-        self.0.get("clusters/").await
+        self.0.list_all("clusters/", PageParams::default()).await
+    }
+    pub async fn list_paged(&self, params: &PageParams) -> Result<Page<Cluster>> {
+        self.0.get_page("clusters/", params).await
     }
     pub async fn get(&self, id: u64) -> Result<Cluster> {
         self.0.get(&format!("clusters/{id}/")).await
@@ -144,21 +264,40 @@ pub struct Node {
     pub extra: Extra,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct ListNodesParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cluster_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u32>,
+}
+
+impl Paginate for ListNodesParams {
+    fn set_page(&mut self, page: u32) {
+        self.page = Some(page);
+    }
 }
 
 pub struct Nodes<'c>(pub(crate) &'c VastClient);
 impl<'c> Nodes<'c> {
     pub async fn list(&self) -> Result<Vec<Node>> {
-        self.0.get("nodes/").await
+        self.0.list_all("nodes/", PageParams::default()).await
+    }
+    pub async fn list_paged(&self, params: &PageParams) -> Result<Page<Node>> {
+        self.0.get_page("nodes/", params).await
     }
     pub async fn list_with_params(&self, params: &ListNodesParams) -> Result<Vec<Node>> {
-        self.0.get_with_query("nodes/", params).await
+        self.0.list_all("nodes/", params.clone()).await
+    }
+    pub async fn list_paged_with_params(
+        &self,
+        params: &ListNodesParams,
+    ) -> Result<Page<Node>> {
+        self.0.get_page("nodes/", params).await
     }
     pub async fn get(&self, id: u64) -> Result<Node> {
         self.0.get(&format!("nodes/{id}/")).await
@@ -239,21 +378,40 @@ pub struct UpdateVolume {
     pub enabled: Option<bool>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct ListVolumesParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_snapshot: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u32>,
+}
+
+impl Paginate for ListVolumesParams {
+    fn set_page(&mut self, page: u32) {
+        self.page = Some(page);
+    }
 }
 
 pub struct Volumes<'c>(pub(crate) &'c VastClient);
 impl<'c> Volumes<'c> {
     pub async fn list(&self) -> Result<Vec<Volume>> {
-        self.0.get("volumes/").await
+        self.0.list_all("volumes/", PageParams::default()).await
+    }
+    pub async fn list_paged(&self, params: &PageParams) -> Result<Page<Volume>> {
+        self.0.get_page("volumes/", params).await
     }
     pub async fn list_with_params(&self, p: &ListVolumesParams) -> Result<Vec<Volume>> {
-        self.0.get_with_query("volumes/", p).await
+        self.0.list_all("volumes/", p.clone()).await
+    }
+    pub async fn list_paged_with_params(
+        &self,
+        p: &ListVolumesParams,
+    ) -> Result<Page<Volume>> {
+        self.0.get_page("volumes/", p).await
     }
     pub async fn get(&self, id: u64) -> Result<Volume> {
         self.0.get(&format!("volumes/{id}/")).await
