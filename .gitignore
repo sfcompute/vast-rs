@@ -7,3 +7,4 @@
 *.vmdk
 *.qcow2
 *.iso
+Cargo.lock
