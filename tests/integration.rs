@@ -144,6 +144,7 @@ async fn view_policies_crud() {
             nfs_no_squash: None,
             read_write: Some(vec!["*".to_string()]),
             read_only: None,
+            tenant_id: None,
         })
         .await
         .expect("view_policies().create() failed");
@@ -265,6 +266,7 @@ async fn views_crud() {
             s3_versioning: None,
             s3_locks: None,
             s3_locks_retention_mode: None,
+            tenant_id: None,
         })
         .await
         .expect("views().create() failed");
@@ -384,6 +386,7 @@ async fn quotas_crud() {
             s3_versioning: None,
             s3_locks: None,
             s3_locks_retention_mode: None,
+            tenant_id: None,
         })
         .await
         .expect("bootstrap view create() failed");
@@ -403,6 +406,7 @@ async fn quotas_crud() {
             soft_limit: Some(80 * 1024 * 1024 * 1024),  // 80 GiB soft
             hard_limit_inodes: None,
             soft_limit_inodes: None,
+            tenant_id: None,
         })
         .await
         .expect("quotas().create() failed");
