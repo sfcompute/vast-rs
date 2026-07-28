@@ -103,6 +103,10 @@ impl VastClient {
     pub fn protection_policies(&self) -> api::ProtectionPolicies<'_> {
         api::ProtectionPolicies(self)
     }
+    /// `/api/s3policies/`
+    pub fn s3_policies(&self) -> api::S3Policies<'_> {
+        api::S3Policies(self)
+    }
 
     // -- HTTP plumbing (used by api::*) ---------------------------------------
 
