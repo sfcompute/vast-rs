@@ -588,6 +588,8 @@ pub struct CreateView {
     pub s3_locks: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub s3_locks_retention_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -647,6 +649,8 @@ pub struct CreateViewPolicy {
     pub read_write: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_only: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -710,6 +714,8 @@ pub struct CreateQuota {
     pub hard_limit_inodes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub soft_limit_inodes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -845,6 +851,8 @@ pub struct Snapshot {
 pub struct CreateSnapshot {
     pub name: String,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -878,6 +886,8 @@ pub struct ProtectionPolicy {
 #[derive(Debug, Serialize)]
 pub struct CreateProtectionPolicy {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]

@@ -355,6 +355,7 @@ async fn views_list_and_create() {
             s3_versioning: None,
             s3_locks: None,
             s3_locks_retention_mode: None,
+            tenant_id: None,
         })
         .await
         .unwrap();
@@ -563,6 +564,7 @@ async fn snapshots_create_and_delete() {
         .create(&CreateSnapshot {
             name: "nightly".into(),
             path: "/data".into(),
+            tenant_id: None,
         })
         .await
         .unwrap();
