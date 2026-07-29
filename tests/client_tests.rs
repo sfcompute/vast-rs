@@ -355,6 +355,7 @@ async fn views_list_and_create() {
             s3_versioning: None,
             s3_locks: None,
             s3_locks_retention_mode: None,
+            tenant_id: None,
         })
         .await
         .unwrap();
@@ -540,6 +541,80 @@ async fn users_full_crud() {
 }
 
 #[tokio::test]
+async fn s3_policies_full_crud() {
+    use vast::api::{CreateS3Policy, UpdateS3Policy};
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/s3policies/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "id": 1, "name": "read-only", "guid": "abc",
+            "policy": "{\"Version\":\"2012-10-17\"}", "tenant_id": 1, "enabled": true
+        }])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/s3policies/"))
+        .and(body_json(json!({
+            "name": "full-access", "policy": "{\"Version\":\"2012-10-17\"}", "tenant_id": 1
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 2, "name": "full-access", "guid": "def",
+            "policy": "{\"Version\":\"2012-10-17\"}", "tenant_id": 1, "enabled": true
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/s3policies/2/"))
+        .and(body_json(json!({ "enabled": false })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 2, "name": "full-access", "guid": "def",
+            "policy": "{\"Version\":\"2012-10-17\"}", "tenant_id": 1, "enabled": false
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/s3policies/2/"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let policies = client.s3_policies().list().await.unwrap();
+    assert_eq!(policies[0].name, "read-only");
+    assert_eq!(policies[0].tenant_id, 1);
+
+    let created = client
+        .s3_policies()
+        .create(&CreateS3Policy {
+            name: "full-access".into(),
+            policy: "{\"Version\":\"2012-10-17\"}".into(),
+            tenant_id: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.id, 2);
+    assert!(created.enabled);
+
+    let updated = client
+        .s3_policies()
+        .update(
+            2,
+            &UpdateS3Policy {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!updated.enabled);
+
+    client.s3_policies().delete(2).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn snapshots_create_and_delete() {
     use vast::api::CreateSnapshot;
     let (server, client) = setup("t").await;
@@ -563,6 +638,7 @@ async fn snapshots_create_and_delete() {
         .create(&CreateSnapshot {
             name: "nightly".into(),
             path: "/data".into(),
+            tenant_id: None,
         })
         .await
         .unwrap();

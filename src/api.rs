@@ -588,6 +588,8 @@ pub struct CreateView {
     pub s3_locks: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub s3_locks_retention_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -647,6 +649,8 @@ pub struct CreateViewPolicy {
     pub read_write: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_only: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -710,6 +714,8 @@ pub struct CreateQuota {
     pub hard_limit_inodes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub soft_limit_inodes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -845,6 +851,8 @@ pub struct Snapshot {
 pub struct CreateSnapshot {
     pub name: String,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -878,6 +886,8 @@ pub struct ProtectionPolicy {
 #[derive(Debug, Serialize)]
 pub struct CreateProtectionPolicy {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -915,6 +925,53 @@ pub struct CreateFolder {
     /// Create intermediate parent directories as needed (`mkdir -p`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub create_dirs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 crud!(cd Folders, Folder, CreateFolder, "folders/");
+
+// ===========================================================================
+// S3 policies
+// ===========================================================================
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct S3Policy {
+    pub id: u64,
+    pub guid: String,
+    pub name: String,
+    pub policy: String,
+    pub users: Vec<String>,
+    pub groups: Vec<String>,
+    pub enabled: bool,
+    pub tenant_id: u64,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateS3Policy {
+    pub name: String,
+    /// The S3 identity policy document, as a JSON string.
+    pub policy: String,
+    pub tenant_id: u64,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct UpdateS3Policy {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+crud!(
+    S3Policies,
+    S3Policy,
+    CreateS3Policy,
+    UpdateS3Policy,
+    "s3policies/"
+);
