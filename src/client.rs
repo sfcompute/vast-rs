@@ -114,7 +114,7 @@ impl VastClient {
         self.send(Method::GET, path, None::<&()>, None::<&()>).await
     }
 
-    pub(crate) async fn get_with_query<T: DeserializeOwned, Q: Serialize + ?Sized>(
+    pub async fn get_with_query<T: DeserializeOwned, Q: Serialize + ?Sized>(
         &self,
         path: &str,
         query: &Q,
