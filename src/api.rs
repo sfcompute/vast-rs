@@ -961,7 +961,8 @@ pub struct CreateS3Policy {
     pub name: String,
     /// The S3 identity policy document, as a JSON string.
     pub policy: String,
-    pub tenant_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]

@@ -592,7 +592,7 @@ async fn s3_policies_full_crud() {
         .create(&CreateS3Policy {
             name: "full-access".into(),
             policy: "{\"Version\":\"2012-10-17\"}".into(),
-            tenant_id: 1,
+            tenant_id: Some(1),
         })
         .await
         .unwrap();
