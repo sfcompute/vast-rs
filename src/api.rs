@@ -565,7 +565,6 @@ pub struct View {
     pub bucket: String,
     pub protocols: Vec<String>,
     pub tenant_id: Option<u64>,
-    pub enabled: bool,
     #[serde(flatten)]
     pub extra: Extra,
     pub bucket_owner: String,
