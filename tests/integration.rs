@@ -267,6 +267,7 @@ async fn views_crud() {
             s3_locks: None,
             s3_locks_retention_mode: None,
             tenant_id: None,
+            bucket_owner: None,
         })
         .await
         .expect("views().create() failed");
@@ -387,6 +388,7 @@ async fn quotas_crud() {
             s3_locks: None,
             s3_locks_retention_mode: None,
             tenant_id: None,
+            bucket_owner: None,
         })
         .await
         .expect("bootstrap view create() failed");
