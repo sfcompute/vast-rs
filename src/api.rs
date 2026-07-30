@@ -565,9 +565,10 @@ pub struct View {
     pub bucket: String,
     pub protocols: Vec<String>,
     pub tenant_id: Option<u64>,
+    pub enabled: bool,
+    pub bucket_owner: Option<String>,
     #[serde(flatten)]
     pub extra: Extra,
-    pub bucket_owner: String,
 }
 
 #[derive(Debug, Serialize)]
