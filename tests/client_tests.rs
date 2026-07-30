@@ -443,8 +443,8 @@ async fn nodes_list_with_params_omits_none_fields() {
 
 #[tokio::test]
 async fn delete_folder_posts_body_on_delete() {
-    // `delete_folder` is the only hand-coded method that sends a body
-    // on a DELETE — easy to break without noticing.
+    // `Clusters::delete_folder` sends a body on a DELETE — easy to break
+    // without noticing. `Folders::delete` below does the same.
     let (server, client) = setup("t").await;
     Mock::given(method("DELETE"))
         .and(path("/api/clusters/1/delete_folder/"))
@@ -478,6 +478,102 @@ async fn delete_folder_omits_tenant_id_when_none() {
     client
         .clusters()
         .delete_folder(1, "/data/scratch", None)
+        .await
+        .unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn folders_create_posts_to_create_folder_action() {
+    use vast::api::CreateFolder;
+    let (server, client) = setup("t").await;
+    Mock::given(method("POST"))
+        .and(path("/api/folders/create_folder/"))
+        .and(body_json(json!({
+            "path": "/sfc/chris/newdir",
+            "tenant_id": 2,
+            "owner_is_group": true,
+            "user": "chris",
+            "group": "sfc",
+            "create_dir_mode": 493,
+            "inherit_acl": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 1, "guid": "g1", "name": "newdir", "path": "/sfc/chris/newdir"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let folder = client
+        .folders()
+        .create(&CreateFolder {
+            path: "/sfc/chris/newdir".into(),
+            tenant_id: Some(2),
+            owner_is_group: Some(true),
+            user: Some("chris".into()),
+            group: Some("sfc".into()),
+            create_dir_mode: Some(0o755),
+            inherit_acl: Some(true),
+        })
+        .await
+        .unwrap();
+    assert_eq!(folder.path, "/sfc/chris/newdir");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn folders_get_posts_to_stat_path_action() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("POST"))
+        .and(path("/api/folders/stat_path/"))
+        .and(body_json(json!({ "path": "/sfc/chris", "tenant_id": 2 })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "user": "chris", "group": "sfc" })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let owner = client.folders().get("/sfc/chris", Some(2)).await.unwrap();
+    assert_eq!(owner.user, "chris");
+    assert_eq!(owner.group, "sfc");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn folders_get_omits_tenant_id_when_none() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("POST"))
+        .and(path("/api/folders/stat_path/"))
+        .and(body_json(json!({ "path": "/sfc/chris" })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "user": "chris", "group": "sfc" })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client.folders().get("/sfc/chris", None).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn folders_delete_sends_body_to_delete_folder_action() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/folders/delete_folder/"))
+        .and(body_json(
+            json!({ "path": "/sfc/chris/newdir", "tenant_id": 2 }),
+        ))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client
+        .folders()
+        .delete("/sfc/chris/newdir", Some(2))
         .await
         .unwrap();
     server.verify().await;

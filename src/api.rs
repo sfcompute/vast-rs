@@ -913,6 +913,13 @@ crud!(
 // ===========================================================================
 // Folders
 // ===========================================================================
+//
+// Folders aren't a REST resource with stable IDs — the VMS exposes them as
+// three POST/DELETE *actions* keyed by filesystem path, not by an
+// enumerable list. There is no `GET /folders/` to list against, so
+// `get`/`delete` can't be expressed as `GET|DELETE /folders/{id}/` the way
+// the `crud!` macro assumes; both take `{path, tenant_id}` as a request
+// body instead.
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -928,14 +935,67 @@ pub struct Folder {
 #[derive(Debug, Serialize)]
 pub struct CreateFolder {
     pub path: String,
-    /// Create intermediate parent directories as needed (`mkdir -p`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub create_dirs: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_is_group: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Octal directory creation mode (e.g. `0o755`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub create_dir_mode: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inherit_acl: Option<bool>,
 }
 
-crud!(cd Folders, Folder, CreateFolder, "folders/");
+/// Body shared by `stat_path` and `delete_folder`, which both key off a
+/// path (optionally scoped to a tenant) rather than an ID.
+#[derive(Debug, Serialize)]
+struct FolderPathBody<'a> {
+    path: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tenant_id: Option<u64>,
+}
+
+/// Response from `stat_path`: the owning user and group for a path.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FolderOwner {
+    #[serde(deserialize_with = "null_default")]
+    pub user: String,
+    #[serde(deserialize_with = "null_default")]
+    pub group: String,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+pub struct Folders<'c>(pub(crate) &'c VastClient);
+impl<'c> Folders<'c> {
+    /// `POST /folders/create_folder/` — create a folder in the Element
+    /// Store under the given tenant, owning group and user.
+    pub async fn create(&self, body: &CreateFolder) -> Result<Folder> {
+        self.0.post("folders/create_folder/", body).await
+    }
+    /// `POST /folders/stat_path/` — look up the owning user and group for
+    /// an Element Store path.
+    pub async fn get(&self, path: &str, tenant_id: Option<u64>) -> Result<FolderOwner> {
+        self.0
+            .post("folders/stat_path/", &FolderPathBody { path, tenant_id })
+            .await
+    }
+    /// `DELETE /folders/delete_folder/` — delete a folder from the
+    /// Element Store.
+    pub async fn delete(&self, path: &str, tenant_id: Option<u64>) -> Result<()> {
+        self.0
+            .delete_with_body(
+                "folders/delete_folder/",
+                &FolderPathBody { path, tenant_id },
+            )
+            .await
+    }
+}
 
 // ===========================================================================
 // S3 policies

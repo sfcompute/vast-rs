@@ -59,7 +59,8 @@ impl VastClient {
     pub fn clusters(&self) -> api::Clusters<'_> {
         api::Clusters(self)
     }
-    /// `/api/folders/`
+    /// `/api/folders/{create_folder,stat_path,delete_folder}/` — action
+    /// endpoints keyed by path, not a listable resource.
     pub fn folders(&self) -> api::Folders<'_> {
         api::Folders(self)
     }
