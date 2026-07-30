@@ -425,6 +425,7 @@ pub struct User {
     pub email: Option<String>,
     pub enabled: Option<bool>,
     pub is_admin: Option<bool>,
+    pub s3_policy_ids: Vec<u64>,
     #[serde(flatten)]
     pub extra: Extra,
 }
@@ -438,6 +439,8 @@ pub struct CreateUser {
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub s3_policy_ids: Vec<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -565,6 +568,7 @@ pub struct View {
     pub enabled: bool,
     #[serde(flatten)]
     pub extra: Extra,
+    pub bucket_owner: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -590,6 +594,8 @@ pub struct CreateView {
     pub s3_locks_retention_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket_owner: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]

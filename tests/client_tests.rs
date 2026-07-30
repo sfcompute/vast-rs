@@ -356,6 +356,7 @@ async fn views_list_and_create() {
             s3_locks: None,
             s3_locks_retention_mode: None,
             tenant_id: None,
+            bucket_owner: None,
         })
         .await
         .unwrap();
@@ -518,6 +519,7 @@ async fn users_full_crud() {
             uid: Some(1001),
             email: None,
             enabled: None,
+            s3_policy_ids: Vec::new(),
         })
         .await
         .unwrap();
@@ -1148,6 +1150,7 @@ async fn post_is_never_retried_even_on_5xx() {
             uid: None,
             email: None,
             enabled: None,
+            s3_policy_ids: Vec::new(),
         })
         .await
         .unwrap_err();
