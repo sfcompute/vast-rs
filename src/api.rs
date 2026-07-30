@@ -564,7 +564,7 @@ pub struct View {
     pub policy_id: u64,
     pub bucket: String,
     pub protocols: Vec<String>,
-    pub tenant_id: u64,
+    pub tenant_id: Option<u64>,
     pub enabled: bool,
     #[serde(flatten)]
     pub extra: Extra,
@@ -951,7 +951,7 @@ pub struct S3Policy {
     pub users: Vec<String>,
     pub groups: Vec<String>,
     pub enabled: bool,
-    pub tenant_id: u64,
+    pub tenant_id: Option<u64>,
     #[serde(flatten)]
     pub extra: Extra,
 }

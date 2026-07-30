@@ -585,7 +585,7 @@ async fn s3_policies_full_crud() {
 
     let policies = client.s3_policies().list().await.unwrap();
     assert_eq!(policies[0].name, "read-only");
-    assert_eq!(policies[0].tenant_id, 1);
+    assert_eq!(policies[0].tenant_id, Some(1));
 
     let created = client
         .s3_policies()
