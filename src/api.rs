@@ -455,6 +455,79 @@ pub struct UpdateUser {
 
 crud!(Users, User, CreateUser, UpdateUser, "users/");
 
+/// An S3 access key pair belonging to a local user.
+///
+/// `secret_key` is returned **only** at creation time — the VMS never
+/// discloses it again, so persist it when you receive it. The `Debug` impl
+/// redacts it so it can't leak into logs; read it via the field directly.
+#[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UserKeyPair {
+    /// S3 access key, needed to authenticate S3 client requests.
+    #[serde(deserialize_with = "null_default")]
+    pub access_key: String,
+    /// S3 secret key, needed to authenticate S3 client requests.
+    #[serde(deserialize_with = "null_default")]
+    pub secret_key: String,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+impl std::fmt::Debug for UserKeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserKeyPair")
+            .field("access_key", &self.access_key)
+            .field("secret_key", &"[REDACTED]")
+            .field("extra", &self.extra)
+            .finish()
+    }
+}
+
+/// Body for `POST /users/{id}/access_keys/`.
+#[derive(Debug, Serialize)]
+struct CreateAccessKey {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tenant_id: Option<u64>,
+}
+
+/// Body for `DELETE /users/{id}/access_keys/`.
+#[derive(Debug, Serialize)]
+struct DeleteAccessKey<'a> {
+    access_key: &'a str,
+}
+
+impl<'c> Users<'c> {
+    /// `POST /users/{user_id}/access_keys/` — generate an S3 access key
+    /// pair for a local user.
+    ///
+    /// The returned [`UserKeyPair::secret_key`] is only ever shown here;
+    /// store it now or generate a new pair later.
+    pub async fn create_access_key(
+        &self,
+        user_id: u64,
+        tenant_id: Option<u64>,
+    ) -> Result<UserKeyPair> {
+        self.0
+            .post(
+                &format!("users/{user_id}/access_keys/"),
+                &CreateAccessKey { tenant_id },
+            )
+            .await
+    }
+
+    /// `DELETE /users/{user_id}/access_keys/` — remove one S3 access key
+    /// pair from a local user. The key to remove goes in the request body,
+    /// not the path.
+    pub async fn delete_access_key(&self, user_id: u64, access_key: &str) -> Result<()> {
+        self.0
+            .delete_with_body(
+                &format!("users/{user_id}/access_keys/"),
+                &DeleteAccessKey { access_key },
+            )
+            .await
+    }
+}
+
 // ===========================================================================
 // Volumes
 // ===========================================================================

@@ -639,6 +639,78 @@ async fn users_full_crud() {
 }
 
 #[tokio::test]
+async fn users_create_access_key_posts_tenant_id() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("POST"))
+        .and(path("/api/users/5/access_keys/"))
+        .and(body_json(json!({ "tenant_id": 2 })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_key": "AKIA123", "secret_key": "s3cr3t"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let keys = client.users().create_access_key(5, Some(2)).await.unwrap();
+    assert_eq!(keys.access_key, "AKIA123");
+    assert_eq!(keys.secret_key, "s3cr3t");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn users_create_access_key_omits_tenant_id_when_none() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("POST"))
+        .and(path("/api/users/5/access_keys/"))
+        .and(body_json(json!({})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_key": "AKIA123", "secret_key": "s3cr3t"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client.users().create_access_key(5, None).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn users_delete_access_key_sends_key_in_body() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/users/5/access_keys/"))
+        .and(body_json(json!({ "access_key": "AKIA123" })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client
+        .users()
+        .delete_access_key(5, "AKIA123")
+        .await
+        .unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn user_key_pair_debug_redacts_secret_key() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("POST"))
+        .and(path("/api/users/5/access_keys/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_key": "AKIA123", "secret_key": "s3cr3t"
+        })))
+        .mount(&server)
+        .await;
+
+    let keys = client.users().create_access_key(5, None).await.unwrap();
+    let dbg = format!("{keys:?}");
+    assert!(!dbg.contains("s3cr3t"), "secret leaked into Debug: {dbg}");
+    assert!(dbg.contains("AKIA123"));
+}
+
+#[tokio::test]
 async fn s3_policies_full_crud() {
     use vast::api::{CreateS3Policy, UpdateS3Policy};
     let (server, client) = setup("t").await;
