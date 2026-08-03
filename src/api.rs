@@ -417,6 +417,18 @@ impl<'c> Nodes<'c> {
 // ===========================================================================
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct UserAccessKey(pub String, pub String);
+
+impl UserAccessKey {
+    pub fn id(&self) -> &str {
+        &self.0
+    }
+    pub fn status(&self) -> &str {
+        &self.1
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct User {
     pub id: u64,
@@ -426,6 +438,7 @@ pub struct User {
     pub enabled: Option<bool>,
     pub is_admin: Option<bool>,
     pub s3_policy_ids: Vec<u64>,
+    pub access_keys: Vec<UserAccessKey>,
     #[serde(flatten)]
     pub extra: Extra,
 }
