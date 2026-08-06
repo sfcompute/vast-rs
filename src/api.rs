@@ -437,7 +437,7 @@ pub struct User {
     pub email: Option<String>,
     pub enabled: Option<bool>,
     pub is_admin: Option<bool>,
-    pub s3_policy_ids: Vec<u64>,
+    pub s3_policies_ids: Vec<u64>,
     pub access_keys: Vec<UserAccessKey>,
     #[serde(flatten)]
     pub extra: Extra,
@@ -453,7 +453,7 @@ pub struct CreateUser {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub s3_policy_ids: Vec<u64>,
+    pub s3_policies_ids: Vec<u64>,
 }
 
 #[derive(Debug, Default, Serialize)]
