@@ -147,9 +147,15 @@ client.volumes().delete(vol.id).await?;
 ### Users
 
 ```rust
-use vast::api::{CreateUser, UpdateUser};
+use vast::api::{CreateUser, ListUsersParams, UpdateUser};
 
 let users = client.users().list().await?;
+
+// Look up a user by name
+let named = client.users().list_with_params(&ListUsersParams {
+    name: Some("alice".into()),
+    ..Default::default()
+}).await?;
 
 let user = client.users().create(&CreateUser {
     name: "alice".into(),
@@ -276,6 +282,7 @@ page request as pagination advances.
 | Resource      | Params struct           | Filters                |
 |---------------|-------------------------|------------------------|
 | Nodes         | `ListNodesParams`       | `cluster_id`, `state`  |
+| Users         | `ListUsersParams`       | `name`                 |
 | Volumes       | `ListVolumesParams`     | `path`, `is_snapshot`  |
 | Views         | `ListViewsParams`       | `path`, `bucket`       |
 | Quotas        | `ListQuotasParams`      | `path`                 |
@@ -359,7 +366,7 @@ After running, diff `api-spec/vast-openapi.json` against the previous version to
 |----------------------|:----:|:-------:|:---:|:------:|:------:|:------:|
 | Clusters             | ✓    |         | ✓   |        |        |        |
 | Nodes                | ✓    | ✓       | ✓   |        |        |        |
-| Users                | ✓    |         | ✓   | ✓      | ✓      | ✓      |
+| Users                | ✓    | ✓       | ✓   | ✓      | ✓      | ✓      |
 | Volumes              | ✓    | ✓       | ✓   | ✓      | ✓      | ✓      |
 | Views                | ✓    | ✓       | ✓   | ✓      | ✓      | ✓      |
 | View Policies        | ✓    |         | ✓   | ✓      | ✓      | ✓      |

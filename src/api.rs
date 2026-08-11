@@ -488,7 +488,22 @@ pub struct UpdateUser {
     pub enabled: Option<bool>,
 }
 
-crud!(Users, User, CreateUser, UpdateUser, "users/");
+list_params! {
+    /// Filters for `GET /users/`.
+    ListUsersParams {
+        /// Only the user with this exact name.
+        name: String,
+    }
+}
+
+crud!(
+    Users,
+    User,
+    CreateUser,
+    UpdateUser,
+    "users/",
+    filters = ListUsersParams
+);
 
 /// An S3 access key pair belonging to a local user.
 ///

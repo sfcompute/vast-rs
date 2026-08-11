@@ -471,6 +471,32 @@ async fn views_list_with_params_filters_by_path_and_bucket() {
 }
 
 #[tokio::test]
+async fn users_list_with_params_filters_by_name() {
+    use vast::api::ListUsersParams;
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/"))
+        .and(query_param("name", "alice"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "id": 4, "name": "alice", "uid": 1000
+        }])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let users = client
+        .users()
+        .list_with_params(&ListUsersParams {
+            name: Some("alice".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(users[0].name, "alice");
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn quotas_list_with_params_filters_by_path() {
     use vast::api::ListQuotasParams;
     let (server, client) = setup("t").await;
