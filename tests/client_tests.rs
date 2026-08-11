@@ -442,6 +442,87 @@ async fn nodes_list_with_params_omits_none_fields() {
 }
 
 #[tokio::test]
+async fn views_list_with_params_filters_by_path_and_bucket() {
+    use vast::api::ListViewsParams;
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/views/"))
+        .and(query_param("path", "/buckets/x"))
+        .and(query_param("bucket", "x"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "id": 5, "name": "s3", "path": "/buckets/x", "policy_id": 2,
+            "protocols": ["S3"], "bucket": "x"
+        }])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let views = client
+        .views()
+        .list_with_params(&ListViewsParams {
+            path: Some("/buckets/x".into()),
+            bucket: Some("x".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(views[0].bucket, "x");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn quotas_list_with_params_filters_by_path() {
+    use vast::api::ListQuotasParams;
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/quotas/"))
+        .and(query_param("path", "/data"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "id": 3, "name": "data", "path": "/data", "used_capacity": 1024
+        }])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let quotas = client
+        .quotas()
+        .list_with_params(&ListQuotasParams {
+            path: Some("/data".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(quotas[0].path, "/data");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn s3_policies_list_with_params_filters_by_name() {
+    use vast::api::ListS3PoliciesParams;
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/s3policies/"))
+        .and(query_param("name", "read-only"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "id": 9, "name": "read-only", "policy": "{}", "enabled": true
+        }])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let policies = client
+        .s3_policies()
+        .list_with_params(&ListS3PoliciesParams {
+            name: Some("read-only".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(policies[0].name, "read-only");
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn delete_folder_posts_body_on_delete() {
     // `Clusters::delete_folder` sends a body on a DELETE — easy to break
     // without noticing. `Folders::delete` below does the same.
