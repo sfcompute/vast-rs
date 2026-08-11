@@ -147,9 +147,15 @@ client.volumes().delete(vol.id).await?;
 ### Users
 
 ```rust
-use vast::api::{CreateUser, UpdateUser};
+use vast::api::{CreateUser, ListUsersParams, UpdateUser};
 
 let users = client.users().list().await?;
+
+// Look up a user by name
+let named = client.users().list_with_params(&ListUsersParams {
+    name: Some("alice".into()),
+    ..Default::default()
+}).await?;
 
 let user = client.users().create(&CreateUser {
     name: "alice".into(),
@@ -164,9 +170,19 @@ client.users().delete(user.id).await?;
 ### Views
 
 ```rust
-use vast::api::{CreateView, UpdateView};
+use vast::api::{CreateView, ListViewsParams, UpdateView};
 
 let views = client.views().list().await?;
+
+// Look up a view by path, or by the S3 bucket it exports
+let by_path = client.views().list_with_params(&ListViewsParams {
+    path: Some("/data".into()),
+    ..Default::default()
+}).await?;
+let by_bucket = client.views().list_with_params(&ListViewsParams {
+    bucket: Some("my-bucket".into()),
+    ..Default::default()
+}).await?;
 
 let view = client.views().create(&CreateView {
     name: "nfs-export".into(),
@@ -195,9 +211,15 @@ let policy = client.view_policies().get(1).await?;
 ### Quotas
 
 ```rust
-use vast::api::{CreateQuota, UpdateQuota};
+use vast::api::{CreateQuota, ListQuotasParams, UpdateQuota};
 
 let quotas = client.quotas().list().await?;
+
+// Look up the quota on a specific path
+let on_path = client.quotas().list_with_params(&ListQuotasParams {
+    path: Some("/data".into()),
+    ..Default::default()
+}).await?;
 
 let quota = client.quotas().create(&CreateQuota {
     name: "team-limit".into(),
@@ -232,6 +254,42 @@ let snap = client.snapshots().create(&CreateSnapshot {
     path: "/data".into(),
 }).await?;
 ```
+
+### S3 Policies
+
+```rust
+use vast::api::{CreateS3Policy, ListS3PoliciesParams};
+
+let policies = client.s3_policies().list().await?;
+
+// Look up a policy by name
+let named = client.s3_policies().list_with_params(&ListS3PoliciesParams {
+    name: Some("read-only".into()),
+    ..Default::default()
+}).await?;
+```
+
+### Filtering lists
+
+Resources whose endpoints support server-side filtering expose a
+`List<Resource>Params` struct and three methods taking it in place of
+`PageParams`: `list_with_params` (auto-paginates), `list_paged_with_params`
+(one page), and `iter_with_params` (lazy stream). Every params struct
+derives `Default`, and `None` fields are omitted from the query string —
+so `Default::default()` filters nothing, and filters are re-sent on each
+page request as pagination advances.
+
+| Resource      | Params struct           | Filters                |
+|---------------|-------------------------|------------------------|
+| Nodes         | `ListNodesParams`       | `cluster_id`, `state`  |
+| Users         | `ListUsersParams`       | `name`                 |
+| Volumes       | `ListVolumesParams`     | `path`, `is_snapshot`  |
+| Views         | `ListViewsParams`       | `path`, `bucket`       |
+| Quotas        | `ListQuotasParams`      | `path`                 |
+| S3 Policies   | `ListS3PoliciesParams`  | `name`                 |
+
+Filters are additive on the VMS side — setting two narrows the result set
+to items matching both.
 
 ### Error handling
 
@@ -304,18 +362,19 @@ After running, diff `api-spec/vast-openapi.json` against the previous version to
 
 ## API Coverage
 
-| Resource             | list | get | create | update | delete |
-|----------------------|:----:|:---:|:------:|:------:|:------:|
-| Clusters             | ✓    | ✓   |        |        |        |
-| Nodes                | ✓    | ✓   |        |        |        |
-| Users                | ✓    | ✓   | ✓      | ✓      | ✓      |
-| Volumes              | ✓    | ✓   | ✓      | ✓      | ✓      |
-| Views                | ✓    | ✓   | ✓      | ✓      | ✓      |
-| View Policies        | ✓    | ✓   | ✓      | ✓      | ✓      |
-| Quotas               | ✓    | ✓   | ✓      | ✓      | ✓      |
-| VIP Pools            | ✓    | ✓   | ✓      | ✓      | ✓      |
-| Snapshots            | ✓    | ✓   | ✓      | ✓      | ✓      |
-| Protection Policies  | ✓    | ✓   | ✓      | ✓      | ✓      |
+| Resource             | list | filters | get | create | update | delete |
+|----------------------|:----:|:-------:|:---:|:------:|:------:|:------:|
+| Clusters             | ✓    |         | ✓   |        |        |        |
+| Nodes                | ✓    | ✓       | ✓   |        |        |        |
+| Users                | ✓    | ✓       | ✓   | ✓      | ✓      | ✓      |
+| Volumes              | ✓    | ✓       | ✓   | ✓      | ✓      | ✓      |
+| Views                | ✓    | ✓       | ✓   | ✓      | ✓      | ✓      |
+| View Policies        | ✓    |         | ✓   | ✓      | ✓      | ✓      |
+| Quotas               | ✓    | ✓       | ✓   | ✓      | ✓      | ✓      |
+| VIP Pools            | ✓    |         | ✓   | ✓      | ✓      | ✓      |
+| Snapshots            | ✓    |         | ✓   | ✓      | ✓      | ✓      |
+| Protection Policies  | ✓    |         | ✓   | ✓      | ✓      | ✓      |
+| S3 Policies          | ✓    | ✓       | ✓   | ✓      | ✓      | ✓      |
 
 ---
 

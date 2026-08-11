@@ -222,30 +222,101 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Macro: emit list/list_paged/get/delete (and create/update/delete_with_body
-// when needed). Every list endpoint gets two flavors:
+// Macros: the boilerplate every resource family shares.
+//
+// `list_params!` declares a resource's filter-params struct; `crud!`
+// declares the handle struct and its methods. Every list endpoint gets
+// three flavors:
 //
 //   * `list()`             — auto-paginates and returns the whole collection
 //   * `list_paged(params)` — fetches one specific page
+//   * `iter()`             — streams items, fetching pages lazily
 //
+// Declaring a resource with `filters = ListFooParams` adds a
+// `_with_params` counterpart to each, taking the filter struct in place
+// of `PageParams`.
 // ---------------------------------------------------------------------------
+
+/// Declare a filter-params struct for a list endpoint: one `Option` field
+/// per query parameter the endpoint filters on, plus `page` / `page_size`.
+///
+/// `None` fields are omitted from the query string entirely, so
+/// `Default::default()` filters nothing and lists the whole collection.
+macro_rules! list_params {
+    (
+        $(#[$attr:meta])*
+        $Params:ident { $($(#[$field_attr:meta])* $field:ident: $ty:ty),+ $(,)? }
+    ) => {
+        $(#[$attr])*
+        #[derive(Debug, Default, Clone, Serialize)]
+        pub struct $Params {
+            $(
+                $(#[$field_attr])*
+                #[serde(skip_serializing_if = "Option::is_none")]
+                pub $field: Option<$ty>,
+            )+
+            /// 1-indexed page number. Defaults to the server's first page.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            pub page: Option<u32>,
+            /// Items per page. Defaults to the server's `default_page_size`.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            pub page_size: Option<u32>,
+        }
+
+        impl Paginate for $Params {
+            fn set_page(&mut self, page: u32) {
+                self.page = Some(page);
+            }
+        }
+    };
+}
+
+/// The unfiltered list methods every listable resource gets.
+macro_rules! list_methods {
+    ($Resource:ty, $path:expr) => {
+        pub async fn list(&self) -> Result<Vec<$Resource>> {
+            self.0.list_all($path, PageParams::default()).await
+        }
+        pub async fn list_paged(&self, params: &PageParams) -> Result<Page<$Resource>> {
+            self.0.get_page($path, params).await
+        }
+        /// Stream items one at a time, fetching pages lazily as the
+        /// in-memory buffer drains. See [`PaginatedIter`].
+        pub fn iter(&self) -> PaginatedIter<$Resource, PageParams> {
+            PaginatedIter::new(self.0.clone(), $path.to_string(), PageParams::default())
+        }
+    };
+}
+
+/// Filtered counterparts of [`list_methods`], emitted for resources
+/// declared with `filters = ...`. Filters are carried across every page
+/// request, not just the first.
+macro_rules! filtered_list_methods {
+    ($Resource:ty, $Params:ty, $path:expr) => {
+        /// Auto-paginate, returning every item matching `params`.
+        pub async fn list_with_params(&self, params: &$Params) -> Result<Vec<$Resource>> {
+            self.0.list_all($path, params.clone()).await
+        }
+        /// Fetch one page of the items matching `params`.
+        pub async fn list_paged_with_params(&self, params: &$Params) -> Result<Page<$Resource>> {
+            self.0.get_page($path, params).await
+        }
+        /// Stream the items matching `params`, fetching pages lazily as
+        /// the in-memory buffer drains. See [`PaginatedIter`].
+        pub fn iter_with_params(&self, params: &$Params) -> PaginatedIter<$Resource, $Params> {
+            PaginatedIter::new(self.0.clone(), $path.to_string(), params.clone())
+        }
+    };
+}
 
 macro_rules! crud {
     // Full CRUD: list/list_paged/iter/get/create/update/delete.
-    ($Handle:ident, $Resource:ty, $Create:ty, $Update:ty, $path:expr) => {
+    ($Handle:ident, $Resource:ty, $Create:ty, $Update:ty, $path:expr
+     $(, filters = $Params:ty)?) => {
         pub struct $Handle<'c>(pub(crate) &'c VastClient);
         impl<'c> $Handle<'c> {
-            pub async fn list(&self) -> Result<Vec<$Resource>> {
-                self.0.list_all($path, PageParams::default()).await
-            }
-            pub async fn list_paged(&self, params: &PageParams) -> Result<Page<$Resource>> {
-                self.0.get_page($path, params).await
-            }
-            /// Stream items one at a time, fetching pages lazily as the
-            /// in-memory buffer drains. See [`PaginatedIter`].
-            pub fn iter(&self) -> PaginatedIter<$Resource, PageParams> {
-                PaginatedIter::new(self.0.clone(), $path.to_string(), PageParams::default())
-            }
+            list_methods!($Resource, $path);
+            $( filtered_list_methods!($Resource, $Params, $path); )?
             pub async fn get(&self, id: u64) -> Result<$Resource> {
                 self.0.get(&format!("{}{id}/", $path)).await
             }
@@ -261,20 +332,12 @@ macro_rules! crud {
         }
     };
     // Create-only (no update): used for snapshots-style resources that don't update.
-    (cd $Handle:ident, $Resource:ty, $Create:ty, $path:expr) => {
+    (cd $Handle:ident, $Resource:ty, $Create:ty, $path:expr
+     $(, filters = $Params:ty)?) => {
         pub struct $Handle<'c>(pub(crate) &'c VastClient);
         impl<'c> $Handle<'c> {
-            pub async fn list(&self) -> Result<Vec<$Resource>> {
-                self.0.list_all($path, PageParams::default()).await
-            }
-            pub async fn list_paged(&self, params: &PageParams) -> Result<Page<$Resource>> {
-                self.0.get_page($path, params).await
-            }
-            /// Stream items one at a time, fetching pages lazily as the
-            /// in-memory buffer drains. See [`PaginatedIter`].
-            pub fn iter(&self) -> PaginatedIter<$Resource, PageParams> {
-                PaginatedIter::new(self.0.clone(), $path.to_string(), PageParams::default())
-            }
+            list_methods!($Resource, $path);
+            $( filtered_list_methods!($Resource, $Params, $path); )?
             pub async fn get(&self, id: u64) -> Result<$Resource> {
                 self.0.get(&format!("{}{id}/", $path)).await
             }
@@ -283,6 +346,18 @@ macro_rules! crud {
             }
             pub async fn delete(&self, id: u64) -> Result<()> {
                 self.0.delete(&format!("{}{id}/", $path)).await
+            }
+        }
+    };
+    // Read-only: resources the VMS exposes for listing only (nodes,
+    // clusters). Extra endpoints go in a separate `impl` block.
+    (ro $Handle:ident, $Resource:ty, $path:expr $(, filters = $Params:ty)?) => {
+        pub struct $Handle<'c>(pub(crate) &'c VastClient);
+        impl<'c> $Handle<'c> {
+            list_methods!($Resource, $path);
+            $( filtered_list_methods!($Resource, $Params, $path); )?
+            pub async fn get(&self, id: u64) -> Result<$Resource> {
+                self.0.get(&format!("{}{id}/", $path)).await
             }
         }
     };
@@ -309,25 +384,9 @@ pub struct Cluster {
     pub extra: Extra,
 }
 
-pub struct Clusters<'c>(pub(crate) &'c VastClient);
+crud!(ro Clusters, Cluster, "clusters/");
+
 impl<'c> Clusters<'c> {
-    pub async fn list(&self) -> Result<Vec<Cluster>> {
-        self.0.list_all("clusters/", PageParams::default()).await
-    }
-    pub async fn list_paged(&self, params: &PageParams) -> Result<Page<Cluster>> {
-        self.0.get_page("clusters/", params).await
-    }
-    /// Stream clusters one at a time, fetching pages lazily.
-    pub fn iter(&self) -> PaginatedIter<Cluster, PageParams> {
-        PaginatedIter::new(
-            self.0.clone(),
-            "clusters/".to_string(),
-            PageParams::default(),
-        )
-    }
-    pub async fn get(&self, id: u64) -> Result<Cluster> {
-        self.0.get(&format!("clusters/{id}/")).await
-    }
     /// Permanently delete a filesystem directory from the VAST namespace.
     /// `DELETE /api/clusters/{cluster_id}/delete_folder/` — requires the
     /// "Trash Folder Access" cluster setting.
@@ -363,54 +422,17 @@ pub struct Node {
     pub extra: Extra,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct ListNodesParams {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cluster_id: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<u32>,
-}
-
-impl Paginate for ListNodesParams {
-    fn set_page(&mut self, page: u32) {
-        self.page = Some(page);
+list_params! {
+    /// Filters for `GET /nodes/`.
+    ListNodesParams {
+        /// Only nodes belonging to this cluster.
+        cluster_id: u64,
+        /// Only nodes in this state (e.g. `"ACTIVE"`).
+        state: String,
     }
 }
 
-pub struct Nodes<'c>(pub(crate) &'c VastClient);
-impl<'c> Nodes<'c> {
-    pub async fn list(&self) -> Result<Vec<Node>> {
-        self.0.list_all("nodes/", PageParams::default()).await
-    }
-    pub async fn list_paged(&self, params: &PageParams) -> Result<Page<Node>> {
-        self.0.get_page("nodes/", params).await
-    }
-    pub async fn list_with_params(&self, params: &ListNodesParams) -> Result<Vec<Node>> {
-        self.0.list_all("nodes/", params.clone()).await
-    }
-    pub async fn list_paged_with_params(&self, params: &ListNodesParams) -> Result<Page<Node>> {
-        self.0.get_page("nodes/", params).await
-    }
-    /// Stream nodes one at a time, fetching pages lazily.
-    pub fn iter(&self) -> PaginatedIter<Node, PageParams> {
-        PaginatedIter::new(self.0.clone(), "nodes/".to_string(), PageParams::default())
-    }
-    /// Stream nodes one at a time with filter params (e.g. `cluster_id`),
-    /// fetching pages lazily.
-    pub fn iter_with_params(
-        &self,
-        params: &ListNodesParams,
-    ) -> PaginatedIter<Node, ListNodesParams> {
-        PaginatedIter::new(self.0.clone(), "nodes/".to_string(), params.clone())
-    }
-    pub async fn get(&self, id: u64) -> Result<Node> {
-        self.0.get(&format!("nodes/{id}/")).await
-    }
-}
+crud!(ro Nodes, Node, "nodes/", filters = ListNodesParams);
 
 // ===========================================================================
 // Users
@@ -466,7 +488,22 @@ pub struct UpdateUser {
     pub enabled: Option<bool>,
 }
 
-crud!(Users, User, CreateUser, UpdateUser, "users/");
+list_params! {
+    /// Filters for `GET /users/`.
+    ListUsersParams {
+        /// Only the user with this exact name.
+        name: String,
+    }
+}
+
+crud!(
+    Users,
+    User,
+    CreateUser,
+    UpdateUser,
+    "users/",
+    filters = ListUsersParams
+);
 
 /// An S3 access key pair belonging to a local user.
 ///
@@ -575,66 +612,24 @@ pub struct UpdateVolume {
     pub enabled: Option<bool>,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct ListVolumesParams {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_snapshot: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<u32>,
-}
-
-impl Paginate for ListVolumesParams {
-    fn set_page(&mut self, page: u32) {
-        self.page = Some(page);
+list_params! {
+    /// Filters for `GET /volumes/`.
+    ListVolumesParams {
+        /// Only the volume at this exact filesystem path.
+        path: String,
+        /// Restrict to snapshot volumes (`true`) or live volumes (`false`).
+        is_snapshot: bool,
     }
 }
 
-pub struct Volumes<'c>(pub(crate) &'c VastClient);
-impl<'c> Volumes<'c> {
-    pub async fn list(&self) -> Result<Vec<Volume>> {
-        self.0.list_all("volumes/", PageParams::default()).await
-    }
-    pub async fn list_paged(&self, params: &PageParams) -> Result<Page<Volume>> {
-        self.0.get_page("volumes/", params).await
-    }
-    pub async fn list_with_params(&self, p: &ListVolumesParams) -> Result<Vec<Volume>> {
-        self.0.list_all("volumes/", p.clone()).await
-    }
-    pub async fn list_paged_with_params(&self, p: &ListVolumesParams) -> Result<Page<Volume>> {
-        self.0.get_page("volumes/", p).await
-    }
-    /// Stream volumes one at a time, fetching pages lazily.
-    pub fn iter(&self) -> PaginatedIter<Volume, PageParams> {
-        PaginatedIter::new(
-            self.0.clone(),
-            "volumes/".to_string(),
-            PageParams::default(),
-        )
-    }
-    /// Stream volumes one at a time with filter params, fetching pages lazily.
-    pub fn iter_with_params(
-        &self,
-        p: &ListVolumesParams,
-    ) -> PaginatedIter<Volume, ListVolumesParams> {
-        PaginatedIter::new(self.0.clone(), "volumes/".to_string(), p.clone())
-    }
-    pub async fn get(&self, id: u64) -> Result<Volume> {
-        self.0.get(&format!("volumes/{id}/")).await
-    }
-    pub async fn create(&self, body: &CreateVolume) -> Result<Volume> {
-        self.0.post("volumes/", body).await
-    }
-    pub async fn update(&self, id: u64, body: &UpdateVolume) -> Result<Volume> {
-        self.0.patch(&format!("volumes/{id}/"), body).await
-    }
-    pub async fn delete(&self, id: u64) -> Result<()> {
-        self.0.delete(&format!("volumes/{id}/")).await
-    }
-}
+crud!(
+    Volumes,
+    Volume,
+    CreateVolume,
+    UpdateVolume,
+    "volumes/",
+    filters = ListVolumesParams
+);
 
 // ===========================================================================
 // Views
@@ -700,7 +695,24 @@ pub struct UpdateView {
     pub enabled: Option<bool>,
 }
 
-crud!(Views, View, CreateView, UpdateView, "views/");
+list_params! {
+    /// Filters for `GET /views/`.
+    ListViewsParams {
+        /// Only the view at this exact filesystem path.
+        path: String,
+        /// Only the view exporting this S3 bucket name.
+        bucket: String,
+    }
+}
+
+crud!(
+    Views,
+    View,
+    CreateView,
+    UpdateView,
+    "views/",
+    filters = ListViewsParams
+);
 
 // ===========================================================================
 // View policies
@@ -824,7 +836,22 @@ pub struct UpdateQuota {
     pub enable_alarms: Option<bool>,
 }
 
-crud!(Quotas, Quota, CreateQuota, UpdateQuota, "quotas/");
+list_params! {
+    /// Filters for `GET /quotas/`.
+    ListQuotasParams {
+        /// Only the quota on this exact filesystem path.
+        path: String,
+    }
+}
+
+crud!(
+    Quotas,
+    Quota,
+    CreateQuota,
+    UpdateQuota,
+    "quotas/",
+    filters = ListQuotasParams
+);
 
 // ===========================================================================
 // VIP pools
@@ -1121,10 +1148,19 @@ pub struct UpdateS3Policy {
     pub enabled: Option<bool>,
 }
 
+list_params! {
+    /// Filters for `GET /s3policies/`.
+    ListS3PoliciesParams {
+        /// Only the policy with this exact name.
+        name: String,
+    }
+}
+
 crud!(
     S3Policies,
     S3Policy,
     CreateS3Policy,
     UpdateS3Policy,
-    "s3policies/"
+    "s3policies/",
+    filters = ListS3PoliciesParams
 );
