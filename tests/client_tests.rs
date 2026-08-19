@@ -316,6 +316,119 @@ async fn concurrent_401s_trigger_a_single_credential_exchange() {
     );
 }
 
+/// The body a VMS returns when it rejects an expired access JWT. It comes
+/// back with **403**, not 401 — DRF coerces an authentication failure to 403
+/// when the authenticator supplies no `WWW-Authenticate` header — so keying
+/// refresh off 401 alone means it never fires against a real cluster.
+fn expired_jwt_403_body() -> serde_json::Value {
+    json!({
+        "detail": "Given token not valid for any token type",
+        "messages": [{
+            "token_class": "AccessToken",
+            "token_type": "access",
+            "message": "Token is invalid or expired",
+        }],
+    })
+}
+
+#[tokio::test]
+async fn expired_jwt_403_refreshes_credentials() {
+    let server = MockServer::start().await;
+    mount_rotating_token(&server, "jwt-stale", "jwt-fresh", Duration::ZERO).await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(header("authorization", "Bearer jwt-stale"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(expired_jwt_403_body()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(header("authorization", "Bearer jwt-fresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    setup_credentials_with_retry(&server, 3)
+        .await
+        .clusters()
+        .list()
+        .await
+        .expect("a 403 reporting an invalid token should refresh and succeed");
+
+    assert_eq!(token_request_count(&server).await, 2);
+}
+
+#[tokio::test]
+async fn expired_jwt_403_refreshes_on_non_idempotent_methods() {
+    // The rejection happens in the auth middleware, before any handler
+    // runs, so replaying a DELETE is safe — and a DELETE is exactly where
+    // this was observed failing in production.
+    let server = MockServer::start().await;
+    mount_rotating_token(&server, "jwt-stale", "jwt-fresh", Duration::ZERO).await;
+
+    Mock::given(method("DELETE"))
+        .and(path("/api/views/7/"))
+        .and(header("authorization", "Bearer jwt-stale"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(expired_jwt_403_body()))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/views/7/"))
+        .and(header("authorization", "Bearer jwt-fresh"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    setup_credentials_with_retry(&server, 3)
+        .await
+        .views()
+        .delete(7)
+        .await
+        .expect("DELETE should refresh and replay after a token-rejection 403");
+
+    assert_eq!(token_request_count(&server).await, 2);
+}
+
+#[tokio::test]
+async fn permission_denied_403_does_not_refresh() {
+    // A permission denial shares the 403 with a rejected token, but no
+    // token can fix it. Refreshing would burn one credential exchange per
+    // request for as long as the caller kept retrying.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "jwt" })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_json(
+                json!({"detail": "You do not have permission to perform this action."}),
+            ),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let err = setup_credentials_with_retry(&server, 3)
+        .await
+        .clusters()
+        .list()
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.status_code(), Some(403));
+    assert!(
+        err.to_string().contains("do not have permission"),
+        "the original denial should survive to the caller; got {err}"
+    );
+    // Exactly one exchange (the initial one) and one request — no refresh.
+    server.verify().await;
+}
+
 #[tokio::test]
 async fn credential_exchange_retries_transient_failure() {
     // A fleet of replicas sharing one service account can draw a 429 from

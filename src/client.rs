@@ -284,26 +284,50 @@ impl VastClient {
             .send_with_retries(method.clone(), path, query, body, retry)
             .await?;
 
-        // The VMS gates all routes behind the auth middleware, so 401 is
-        // returned before any handler runs — retrying with a fresh JWT is
-        // safe (no risk of doubled side effects). Only refresh if the
-        // credentials can actually produce a new token; a static API
-        // token will just 401 again.
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.inner.auth.is_refreshable() {
+        // The VMS gates all routes behind the auth middleware, so an auth
+        // rejection is returned before any handler runs — retrying with a
+        // fresh JWT is safe (no risk of doubled side effects). Only refresh
+        // if the credentials can actually produce a new token; a static API
+        // token will just be rejected again.
+        let status = resp.status();
+        if self.inner.auth.is_refreshable() && is_auth_rejection(status) {
+            // Read the body before deciding: the decision depends on it,
+            // and a rejection we *don't* refresh becomes an error whose
+            // message comes from that same body.
+            let err_body = resp.text().await.unwrap_or_default();
+
+            // A 401 on a bearer-authenticated route is unambiguous — the
+            // token was rejected. A 403 is not: DRF returns it both for a
+            // rejected JWT (the VMS surfaces simplejwt's "Given token not
+            // valid for any token type") and for a plain permission denial.
+            // Refreshing on a permission denial would mint a token per
+            // request to fix something no token can, so a 403 has to name a
+            // token problem before we act on it.
+            if status == reqwest::StatusCode::UNAUTHORIZED || reports_token_rejected(&err_body) {
+                tracing::debug!(
+                    generation,
+                    http.status = status.as_u16(),
+                    "VMS rejected the JWT; refreshing and retrying once"
+                );
+                self.refresh_token(generation).await?;
+                // Replay under the same budget rather than as a single bare
+                // attempt: a burst of rejections across replicas sharing one
+                // service account can draw a 429, and the replay deserves
+                // the same backoff any other request gets. This still can't
+                // loop — the replay's own rejection goes to the caller
+                // unrefreshed.
+                let (resp, _) = self
+                    .send_with_retries(method, path, query, body, retry)
+                    .await?;
+                return Ok(resp);
+            }
+
             tracing::debug!(
-                generation,
-                "got 401 from VMS; refreshing cached JWT and retrying once"
+                http.status = status.as_u16(),
+                "got 403 from VMS that does not report a token problem; \
+                 treating as a permission denial rather than refreshing"
             );
-            self.refresh_token(generation).await?;
-            // Replay under the same budget rather than as a single bare
-            // attempt: a burst of 401s across replicas sharing one service
-            // account can draw a 429, and the replay deserves the same
-            // backoff any other request gets. This still can't loop — the
-            // replay's own 401 is returned to the caller unrefreshed.
-            let (resp, _) = self
-                .send_with_retries(method, path, query, body, retry)
-                .await?;
-            return Ok(resp);
+            return Err(api_error_from_body(status.as_u16(), &err_body));
         }
 
         Ok(resp)
@@ -509,10 +533,83 @@ impl VastClient {
 /// surface something useful in those cases instead of dropping it.
 async fn api_error(status: u16, resp: reqwest::Response) -> Error {
     let body = resp.text().await.unwrap_or_default();
+    api_error_from_body(status, &body)
+}
+
+/// `true` if the status is one the VMS uses to reject a bearer token.
+///
+/// 401 is the textbook answer, but DRF coerces `AuthenticationFailed` to
+/// 403 whenever the active authenticator supplies no `WWW-Authenticate`
+/// header, so a rejected JWT can arrive as either.
+fn is_auth_rejection(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    )
+}
+
+/// `true` if an error body reports that the *token* was rejected, as
+/// opposed to the request being forbidden on its merits.
+///
+/// This has to key off the body because the status code alone can't tell
+/// the two apart (see [`is_auth_rejection`]). simplejwt — which the VMS's
+/// error shapes match — reports an unusable token as
+/// `{"detail": "Given token not valid for any token type", "messages": [...]}`,
+/// sometimes with `"code": "token_not_valid"`. A permission denial instead
+/// reads `{"detail": "You do not have permission to perform this action."}`,
+/// which matches none of the markers below.
+///
+/// Matching on message text is inherently brittle, so this errs toward *not*
+/// refreshing: an unrecognised 403 surfaces to the caller rather than
+/// spending a credential exchange. Proactively refreshing before `exp`
+/// would remove the dependence on error shapes altogether.
+fn reports_token_rejected(body: &str) -> bool {
+    /// Lowercase fragments that appear in token-rejection messages but not
+    /// in permission denials.
+    const TOKEN_MARKERS: [&str; 4] = [
+        "token_not_valid",
+        "token not valid",
+        "token is invalid",
+        "token is expired",
+    ];
+
+    let matches_marker = |s: &str| {
+        TOKEN_MARKERS
+            .iter()
+            .any(|m| s.to_ascii_lowercase().contains(m))
+    };
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        // simplejwt attaches per-token diagnostics under `messages` only
+        // when the token itself failed to validate.
+        if v.get("messages").is_some_and(|m| m.is_array()) {
+            return true;
+        }
+        if v.get("code")
+            .and_then(|c| c.as_str())
+            .is_some_and(matches_marker)
+        {
+            return true;
+        }
+        if v.get("detail")
+            .and_then(|d| d.as_str())
+            .is_some_and(matches_marker)
+        {
+            return true;
+        }
+        // Structured body with no token marker — a permission denial.
+        return false;
+    }
+    // Non-JSON (gateway HTML, plain text): fall back to a raw scan.
+    matches_marker(body)
+}
+
+/// Build an [`Error::Api`] from a status and an already-read body.
+fn api_error_from_body(status: u16, body: &str) -> Error {
     let message = if body.is_empty() {
         format!("HTTP {status}")
     } else {
-        match serde_json::from_str::<serde_json::Value>(&body) {
+        match serde_json::from_str::<serde_json::Value>(body) {
             // Structured VMS error — prefer DRF's `detail`, fall back
             // to `message`, then to the raw serialised body.
             Ok(v) => v
@@ -520,7 +617,7 @@ async fn api_error(status: u16, resp: reqwest::Response) -> Error {
                 .or_else(|| v.get("message"))
                 .and_then(|m| m.as_str())
                 .map(str::to_string)
-                .unwrap_or_else(|| body.clone()),
+                .unwrap_or_else(|| body.to_string()),
             // Non-JSON (HTML error pages, plain text, etc.) — surface
             // a truncated raw body so the user can still tell what
             // happened. Truncate by chars, not bytes, so a multi-byte
@@ -833,6 +930,51 @@ mod tests {
         ] {
             assert!(truthy(v), "{v:?} should be truthy");
         }
+    }
+
+    #[test]
+    fn reports_token_rejected_matches_simplejwt_rejection() {
+        // Verbatim body observed from a VMS returning 403 for an expired
+        // access JWT — the case that made refresh silently never fire.
+        assert!(reports_token_rejected(
+            r#"{"detail":"Given token not valid for any token type","messages":[{"token_class":"AccessToken","token_type":"access","message":"Token is invalid or expired"}]}"#
+        ));
+        // Same condition, leaner shapes.
+        assert!(reports_token_rejected(
+            r#"{"detail":"Given token not valid for any token type"}"#
+        ));
+        assert!(reports_token_rejected(
+            r#"{"detail":"Token is invalid or expired","code":"token_not_valid"}"#
+        ));
+    }
+
+    #[test]
+    fn reports_token_rejected_ignores_permission_denials() {
+        // These arrive with the same 403 as a rejected token. Refreshing
+        // on them would mint a credential exchange per request to fix
+        // something no token can fix.
+        for body in [
+            r#"{"detail":"You do not have permission to perform this action."}"#,
+            r#"{"detail":"Authentication credentials were not provided."}"#,
+            r#"{"detail":"Tenant admins may not modify cluster-wide settings."}"#,
+            "",
+        ] {
+            assert!(
+                !reports_token_rejected(body),
+                "should not be treated as a token rejection: {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reports_token_rejected_scans_non_json_bodies() {
+        // A gateway can replace the JSON body with HTML or plain text.
+        assert!(reports_token_rejected(
+            "<html><body>Given token not valid for any token type</body></html>"
+        ));
+        assert!(!reports_token_rejected(
+            "<html><body>Forbidden</body></html>"
+        ));
     }
 
     #[test]
