@@ -16,7 +16,6 @@ async fn setup_with_retry(server: &MockServer, token: &str, max_attempts: u32) -
     VastClient::builder()
         .address(server.uri())
         .token(token)
-        .danger_accept_invalid_certs(true)
         .max_attempts(max_attempts)
         .retry_backoff(Duration::from_millis(1))
         .build()
@@ -28,7 +27,6 @@ async fn setup(token: &str) -> (MockServer, VastClient) {
     let client = VastClient::builder()
         .address(server.uri())
         .token(token)
-        .danger_accept_invalid_certs(true)
         .build()
         .unwrap();
     (server, client)
@@ -148,14 +146,14 @@ async fn tenant_admin_uses_path_scoped_token_endpoint() {
 }
 
 #[tokio::test]
-async fn jwt_401_invalidates_cache_and_refreshes_credentials() {
-    // The cache-invalidate-and-retry contract has two observable
+async fn jwt_401_refreshes_credentials_and_replays_once() {
+    // The refresh-and-replay contract has two observable
     // properties; verify both without depending on wiremock's
     // mock-selection behavior for two identical matchers:
     //
     //   1. The credential exchange runs exactly twice — once to
-    //      populate the cache, once after the cached JWT is
-    //      invalidated by the 401.
+    //      populate the cache, once to replace the JWT the 401
+    //      rejected.
     //   2. The original request is retried exactly once — first call
     //      gets the 401, retry surfaces the second 401 to the caller
     //      because we only retry once.
@@ -205,6 +203,218 @@ async fn static_token_does_not_retry_on_401() {
     let err = client.clusters().list().await.unwrap_err();
     assert!(err.is_unauthorized());
     server.verify().await;
+}
+
+/// Build a credential-auth client with a real retry budget and a near-zero
+/// backoff, so the retry-path tests don't sit on wall-clock sleeps.
+async fn setup_credentials_with_retry(server: &MockServer, max_attempts: u32) -> VastClient {
+    VastClient::builder()
+        .address(server.uri())
+        .credentials("alice", "pw")
+        .danger_accept_invalid_certs(true)
+        .max_attempts(max_attempts)
+        .retry_backoff(Duration::from_millis(1))
+        .build()
+        .unwrap()
+}
+
+/// Mount a token endpoint that hands out `first` once and `rest`
+/// thereafter, so a test can tell the pre- and post-refresh JWT apart.
+///
+/// `delay` widens the window during which an exchange is in flight — the
+/// window concurrent 401s have to pile into.
+async fn mount_rotating_token(server: &MockServer, first: &str, rest: &str, delay: Duration) {
+    Mock::given(method("POST"))
+        .and(path("/api/token/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "access": first }))
+                .set_delay(delay),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/token/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "access": rest }))
+                .set_delay(delay),
+        )
+        .with_priority(2)
+        .mount(server)
+        .await;
+}
+
+async fn token_request_count(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/api/token/")
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_401s_trigger_a_single_credential_exchange() {
+    // A token expiring under concurrent load 401s every in-flight
+    // request. Each of those tasks independently decides to refresh, and
+    // their 401s arrive spread over time rather than all at once — so a
+    // task that 401s late must NOT discard the token an earlier task
+    // already fetched. Without generation tracking, every task in the
+    // refresh window ran its own full credential exchange; the contract
+    // is exactly two — one initial, one refresh — no matter how many
+    // requests are in flight.
+    //
+    // The token endpoint is deliberately slow so all the staggered tasks
+    // land inside the refresh window, which is what makes the assertion
+    // sensitive rather than timing-dependent.
+    let server = MockServer::start().await;
+    mount_rotating_token(&server, "jwt-stale", "jwt-fresh", Duration::from_millis(50)).await;
+
+    // The pre-refresh JWT is rejected; the post-refresh one works. This
+    // models a real expiry, where the refreshed token actually resolves
+    // the 401 — so any exchange beyond the second is pure waste.
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(header("authorization", "Bearer jwt-stale"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "expired"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(header("authorization", "Bearer jwt-fresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    let client = setup_credentials_with_retry(&server, 3).await;
+
+    // Stagger the starts so the 401s land in separate windows — the
+    // interleaving that defeats a plain double-checked lock.
+    let mut set = tokio::task::JoinSet::new();
+    for i in 0..16u64 {
+        let c = client.clone();
+        set.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(2 * i)).await;
+            c.clusters().list().await
+        });
+    }
+    while let Some(joined) = set.join_next().await {
+        joined
+            .unwrap()
+            .expect("every request should succeed after one refresh");
+    }
+
+    let exchanges = token_request_count(&server).await;
+    assert_eq!(
+        exchanges, 2,
+        "expected exactly one initial exchange + one refresh; got {exchanges} \
+         (a count near the request total means refresh is not deduplicated)"
+    );
+}
+
+#[tokio::test]
+async fn credential_exchange_retries_transient_failure() {
+    // A fleet of replicas sharing one service account can draw a 429 from
+    // the token endpoint. That's transient, so it must be retried rather
+    // than surfaced as a hard auth failure.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/token/"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({"detail": "throttled"})))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "jwt" })))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    setup_credentials_with_retry(&server, 3)
+        .await
+        .clusters()
+        .list()
+        .await
+        .expect("throttled token request should be retried");
+
+    assert_eq!(token_request_count(&server).await, 2);
+}
+
+#[tokio::test]
+async fn credential_exchange_does_not_retry_rejected_credentials() {
+    // A wrong password is terminal. Retrying it would burn attempts
+    // against whatever lockout policy the VMS enforces on the account,
+    // so a 401 from the token endpoint must fail on the first try.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/token/"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "no such user"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let err = setup_credentials_with_retry(&server, 3)
+        .await
+        .clusters()
+        .list()
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, vast::Error::Auth(ref m) if m.contains("401")),
+        "expected a terminal auth error; got {err:?}"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn post_401_replay_retries_transient_failure() {
+    // The replay that follows a refresh gets the same retry budget as any
+    // other GET. Previously it was a single bare attempt, so a 5xx or 429
+    // landing on the replay became a hard error for the caller.
+    let server = MockServer::start().await;
+    mount_rotating_token(&server, "jwt-stale", "jwt-fresh", Duration::ZERO).await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(header("authorization", "Bearer jwt-stale"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "expired"})))
+        .mount(&server)
+        .await;
+    // The replay's first attempt hits a blip, its second succeeds.
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(header("authorization", "Bearer jwt-fresh"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .and(header("authorization", "Bearer jwt-fresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    setup_credentials_with_retry(&server, 3)
+        .await
+        .clusters()
+        .list()
+        .await
+        .expect("replay should retry through a transient 503");
 }
 
 #[tokio::test]

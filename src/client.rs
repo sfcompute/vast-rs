@@ -31,7 +31,7 @@ struct Inner {
     /// and behind `RwLock` so a `bearer_token()` slow path can hold the
     /// write guard across the credential exchange — that gives us
     /// single-flight initialisation without an extra primitive.
-    cached_token: RwLock<Option<SecretString>>,
+    cached_token: RwLock<Option<CachedToken>>,
     /// Max attempts per **GET** request (initial + retries). POST /
     /// PATCH / DELETE are never retried because they may be
     /// non-idempotent.
@@ -39,6 +39,40 @@ struct Inner {
     /// Backoff base. Sleeps grow as `base * 2^(attempt-1)` between
     /// attempts (1s → 2s → 4s with the default base).
     retry_backoff: Duration,
+}
+
+/// A cached bearer token, tagged with the generation it was issued under.
+///
+/// The generation is what makes refresh idempotent under concurrency. A
+/// request that 401s records the generation of the token it *used*; the
+/// refresh then runs only if the cache still holds that same generation.
+/// Without it, every task in a batch of concurrent 401s would blindly
+/// null the cache — discarding a token a sibling task had just fetched —
+/// and trigger one full credential exchange per in-flight request.
+#[derive(Clone, Debug)]
+struct CachedToken {
+    secret: SecretString,
+    generation: u64,
+}
+
+/// Retry budget shared by the request path and the credential exchange.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Retry {
+    max_attempts: u32,
+    backoff_base: Duration,
+}
+
+impl Retry {
+    pub(crate) fn max_attempts(&self) -> u32 {
+        self.max_attempts.max(1)
+    }
+
+    /// Backoff before the attempt following `attempt` (1-based): grows as
+    /// `base * 2^(attempt-1)`. The shift is clamped so an unusually large
+    /// `max_attempts` can't overflow the multiplication.
+    pub(crate) fn delay(&self, attempt: u32) -> Duration {
+        self.backoff_base * 2u32.saturating_pow(attempt.saturating_sub(1).min(16))
+    }
 }
 
 impl VastClient {
@@ -234,30 +268,88 @@ impl VastClient {
     {
         // GETs are idempotent so we retry them on transient failures.
         // POST/PATCH/DELETE may be non-idempotent and are sent at most
-        // once. The 401 cache-invalidate-and-retry below is independent
-        // of this budget — it's a single logical retry triggered by a
-        // known-safe condition (the VMS rejects with 401 before any
-        // handler runs).
-        let max_attempts = if method == Method::GET {
-            self.inner.max_attempts.max(1)
-        } else {
-            1
+        // once. The 401 refresh-and-replay below is independent of this
+        // budget — it's a single logical retry triggered by a known-safe
+        // condition (the VMS rejects with 401 before any handler runs).
+        let retry = Retry {
+            max_attempts: if method == Method::GET {
+                self.inner.max_attempts
+            } else {
+                1
+            },
+            backoff_base: self.inner.retry_backoff,
         };
-        let backoff_base = self.inner.retry_backoff;
 
+        let (resp, generation) = self
+            .send_with_retries(method.clone(), path, query, body, retry)
+            .await?;
+
+        // The VMS gates all routes behind the auth middleware, so 401 is
+        // returned before any handler runs — retrying with a fresh JWT is
+        // safe (no risk of doubled side effects). Only refresh if the
+        // credentials can actually produce a new token; a static API
+        // token will just 401 again.
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.inner.auth.is_refreshable() {
+            tracing::debug!(
+                generation,
+                "got 401 from VMS; refreshing cached JWT and retrying once"
+            );
+            self.refresh_token(generation).await?;
+            // Replay under the same budget rather than as a single bare
+            // attempt: a burst of 401s across replicas sharing one service
+            // account can draw a 429, and the replay deserves the same
+            // backoff any other request gets. This still can't loop — the
+            // replay's own 401 is returned to the caller unrefreshed.
+            let (resp, _) = self
+                .send_with_retries(method, path, query, body, retry)
+                .await?;
+            return Ok(resp);
+        }
+
+        Ok(resp)
+    }
+
+    /// Send a request, retrying transient failures per `retry`. Returns the
+    /// response alongside the generation of the token it was sent with, so
+    /// a 401 can be attributed to a specific cached token.
+    async fn send_with_retries<Q, B>(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<&Q>,
+        body: Option<&B>,
+        retry: Retry,
+    ) -> Result<(reqwest::Response, u64)>
+    where
+        Q: Serialize + ?Sized,
+        B: Serialize + ?Sized,
+    {
+        let max_attempts = retry.max_attempts();
         let mut attempt: u32 = 0;
-        let resp = loop {
+        loop {
             attempt += 1;
-            match self.send_once(method.clone(), path, query, body).await {
+            // Fetch the token outside the retried region. A failed
+            // credential exchange has already spent its own budget inside
+            // `Auth::bearer_token`, which retries only transient
+            // conditions — folding it into this loop as well would
+            // multiply token requests, so a rejected password would spend
+            // `max_attempts` tries against the account's lockout policy
+            // instead of one. On the happy path this is a cache read.
+            let token = self.bearer_token().await?;
+            let generation = token.generation;
+            match self
+                .send_once(method.clone(), path, query, body, &token)
+                .await
+            {
                 Ok(resp) => {
                     // Retry 5xx and 429 (rate-limited) responses if we
                     // have budget; everything else (2xx, 3xx, 4xx other
-                    // than 429) flows through to the 401 check below.
+                    // than 429) flows through to the caller's 401 check.
                     let s = resp.status();
                     let retryable_status =
                         s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS;
                     if retryable_status && attempt < max_attempts {
-                        let delay = backoff_base * 2u32.pow(attempt - 1);
+                        let delay = retry.delay(attempt);
                         tracing::warn!(
                             attempt,
                             max_attempts,
@@ -270,10 +362,10 @@ impl VastClient {
                         tokio::time::sleep(delay).await;
                         continue;
                     }
-                    break resp;
+                    return Ok((resp, generation));
                 }
                 Err(e) if attempt < max_attempts => {
-                    let delay = backoff_base * 2u32.pow(attempt - 1);
+                    let delay = retry.delay(attempt);
                     tracing::warn!(
                         attempt,
                         max_attempts,
@@ -288,20 +380,7 @@ impl VastClient {
                 }
                 Err(e) => return Err(e),
             }
-        };
-
-        // The VMS gates all routes behind the auth middleware, so 401 is
-        // returned before any handler runs — retrying with a fresh JWT is
-        // safe (no risk of doubled side effects). Only refresh if the
-        // credentials can actually produce a new token; a static API
-        // token will just 401 again.
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.inner.auth.is_refreshable() {
-            tracing::debug!("got 401 from VMS; refreshing cached JWT and retrying once");
-            self.invalidate_cached_token().await;
-            return self.send_once(method, path, query, body).await;
         }
-
-        Ok(resp)
     }
 
     #[tracing::instrument(
@@ -321,12 +400,12 @@ impl VastClient {
         path: &str,
         query: Option<&Q>,
         body: Option<&B>,
+        token: &CachedToken,
     ) -> Result<reqwest::Response>
     where
         Q: Serialize + ?Sized,
         B: Serialize + ?Sized,
     {
-        let token = self.bearer_token().await?;
         let url = self.inner.base.join(path)?;
         // Expose the secret only at the wire boundary. `bearer_auth`
         // marks the resulting `Authorization` header as sensitive, so
@@ -335,7 +414,7 @@ impl VastClient {
             .inner
             .http
             .request(method, url)
-            .bearer_auth(token.expose_secret());
+            .bearer_auth(token.secret.expose_secret());
         if let Some(q) = query {
             rb = rb.query(q);
         }
@@ -355,7 +434,7 @@ impl VastClient {
     /// on first use. Uses double-checked locking so concurrent first
     /// callers exchange credentials exactly once instead of racing
     /// to hit `/api/token/`.
-    async fn bearer_token(&self) -> Result<SecretString> {
+    async fn bearer_token(&self) -> Result<CachedToken> {
         // Fast path: another task already populated the cache.
         if let Some(t) = self.inner.cached_token.read().await.as_ref() {
             return Ok(t.clone());
@@ -368,18 +447,57 @@ impl VastClient {
         if let Some(t) = guard.as_ref() {
             return Ok(t.clone());
         }
-        tracing::debug!("performing credential exchange against VMS token endpoint");
-        let fetched = self
-            .inner
-            .auth
-            .bearer_token(&self.inner.http, &self.inner.base)
-            .await?;
-        *guard = Some(fetched.clone());
-        Ok(fetched)
+        self.exchange_locked(&mut guard).await
     }
 
-    async fn invalidate_cached_token(&self) {
-        *self.inner.cached_token.write().await = None;
+    /// Replace the cached token after a 401, but only if it hasn't already
+    /// been replaced since `failed_generation` was handed out.
+    ///
+    /// When many in-flight requests 401 together — the normal shape of a
+    /// token expiring under concurrent load — their 401s arrive spread over
+    /// time. Whichever task gets there first exchanges credentials; every
+    /// later task finds a newer generation than the one it used and adopts
+    /// that token instead of minting another. That collapses a stampede of
+    /// up to one exchange *per in-flight request* into exactly one.
+    async fn refresh_token(&self, failed_generation: u64) -> Result<CachedToken> {
+        let mut guard = self.inner.cached_token.write().await;
+        if let Some(t) = guard.as_ref().filter(|t| t.generation != failed_generation) {
+            tracing::debug!(
+                failed_generation,
+                current_generation = t.generation,
+                "cached JWT was already refreshed by another task; reusing it"
+            );
+            return Ok(t.clone());
+        }
+        self.exchange_locked(&mut guard).await
+    }
+
+    /// Exchange credentials and store the result under the next
+    /// generation. The caller must hold the write guard: the exchange runs
+    /// with the lock held, which is what makes both initialisation and
+    /// refresh single-flight.
+    async fn exchange_locked(&self, guard: &mut Option<CachedToken>) -> Result<CachedToken> {
+        tracing::debug!("performing credential exchange against VMS token endpoint");
+        let secret = self
+            .inner
+            .auth
+            .bearer_token(&self.inner.http, &self.inner.base, self.retry())
+            .await?;
+        // Derive the generation from the cache rather than a parameter, so
+        // it stays monotonic regardless of which path got here.
+        let generation = guard.as_ref().map_or(0, |t| t.generation).wrapping_add(1);
+        let fresh = CachedToken { secret, generation };
+        *guard = Some(fresh.clone());
+        Ok(fresh)
+    }
+
+    /// The configured retry budget, used for the credential exchange and
+    /// as the basis for the per-request budget.
+    fn retry(&self) -> Retry {
+        Retry {
+            max_attempts: self.inner.max_attempts,
+            backoff_base: self.inner.retry_backoff,
+        }
     }
 }
 
@@ -497,6 +615,10 @@ impl Builder {
     /// on retryable status codes (`5xx`, `429`). POST / PATCH / DELETE
     /// are sent at most once regardless of this setting, since they
     /// may be non-idempotent.
+    ///
+    /// The same budget applies to the credential exchange against
+    /// `/api/token/`, which is retried on `5xx` / `429` / transport
+    /// failures. Rejected credentials (`401` / `403`) are never retried.
     pub fn max_attempts(mut self, n: u32) -> Self {
         self.max_attempts = Some(n.max(1));
         self
