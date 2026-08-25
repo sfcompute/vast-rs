@@ -649,6 +649,10 @@ const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 /// Default backoff base. Successive retries wait `BASE * 2^(attempt-1)`.
 const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
+/// Env var naming a PEM file of extra CA certificates to trust. See
+/// [`Builder::ca_certificate`].
+const CA_CERT_FILE_VAR: &str = "VMS_CA_CERT_FILE";
+
 /// Builder for [`VastClient`]. Obtain via [`VastClient::builder`].
 #[derive(Default, Debug)]
 pub struct Builder {
@@ -656,9 +660,29 @@ pub struct Builder {
     auth: Option<Auth>,
     tenant: Option<String>,
     accept_invalid_certs: bool,
+    ca_certs: Vec<CaPem>,
     timeout: Option<Duration>,
     max_attempts: Option<u32>,
     retry_backoff: Option<Duration>,
+}
+
+/// A PEM bundle held until [`Builder::build`] parses it, tagged with where it
+/// came from so a parse failure can name the file (or say it was passed
+/// in-process) rather than just "invalid certificate".
+///
+/// `Debug` is hand-written because the derived one would print the PEM as a few
+/// thousand integers, drowning the address and username an operator debugging a
+/// `Builder` is actually looking for.
+#[derive(Clone)]
+struct CaPem {
+    pem: Vec<u8>,
+    source: String,
+}
+
+impl std::fmt::Debug for CaPem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CaPem({}, {} bytes)", self.source, self.pem.len())
+    }
 }
 
 impl Builder {
@@ -694,8 +718,45 @@ impl Builder {
     }
 
     /// Accept self-signed / invalid TLS certificates. **Development only.**
+    ///
+    /// For a VMS presenting a certificate from a private CA, prefer
+    /// [`ca_certificate`](Self::ca_certificate): it keeps the connection
+    /// authenticated instead of trusting whatever answers.
     pub fn danger_accept_invalid_certs(mut self, yes: bool) -> Self {
         self.accept_invalid_certs = yes;
+        self
+    }
+
+    /// Trust `pem` — a PEM-encoded CA certificate, or a bundle of several —
+    /// when validating the VMS certificate, in addition to the public roots.
+    ///
+    /// This is what a VMS with a certificate from a private CA needs, and it is
+    /// not optional there: the client is built on reqwest's `rustls-tls`
+    /// feature, whose root store is the Mozilla set compiled into the binary.
+    /// It reads neither the host's certificate directory nor `SSL_CERT_FILE`,
+    /// so installing the CA on the machine has no effect and a certificate that
+    /// does not chain to a public root fails the handshake.
+    ///
+    /// Repeated calls accumulate rather than replace, so a VMS and an S3
+    /// endpoint anchored to different roots can both be added. The PEM is
+    /// parsed by [`build`](Self::build), which rejects one containing no
+    /// certificate.
+    ///
+    /// ```rust,no_run
+    /// # use vast::VastClient;
+    /// let pem = std::fs::read("/etc/vast-ca/ca.crt")?;
+    /// let client = VastClient::builder()
+    ///     .address("vms.example.com")
+    ///     .token("tok")
+    ///     .ca_certificate(pem)
+    ///     .build()?;
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn ca_certificate(mut self, pem: impl Into<Vec<u8>>) -> Self {
+        self.ca_certs.push(CaPem {
+            pem: pem.into(),
+            source: "ca_certificate()".into(),
+        });
         self
     }
 
@@ -732,12 +793,20 @@ impl Builder {
     /// Build from environment variables: `VMS_ADDRESS` plus either `VMS_TOKEN`
     /// or `VMS_USER`+`VMS_PASSWORD` (and optional `VMS_TENANT`).
     ///
-    /// Also reads `VMS_DANGER_ACCEPT_INVALID_CERTS` — set to a truthy
-    /// value (`"1"`, `"true"`, `"yes"`, `"on"`, case-insensitive) to
-    /// disable TLS certificate validation. **Development / self-signed
-    /// VMS deployments only.** Equivalent to calling
-    /// [`danger_accept_invalid_certs(true)`](Self::danger_accept_invalid_certs)
-    /// on the builder.
+    /// Also reads:
+    ///
+    /// * `VMS_CA_CERT_FILE` — path to a PEM CA certificate or bundle to trust
+    ///   in addition to the public roots, as
+    ///   [`ca_certificate`](Self::ca_certificate). A path that cannot be read
+    ///   is an error, not a fallback to the public roots: silently continuing
+    ///   would turn a typo'd mount path into a handshake failure on the first
+    ///   request instead of a clear one at startup.
+    /// * `VMS_DANGER_ACCEPT_INVALID_CERTS` — set to a truthy value (`"1"`,
+    ///   `"true"`, `"yes"`, `"on"`, case-insensitive) to disable TLS
+    ///   certificate validation. **Development / self-signed VMS deployments
+    ///   only.** Equivalent to calling
+    ///   [`danger_accept_invalid_certs(true)`](Self::danger_accept_invalid_certs)
+    ///   on the builder.
     pub fn from_env() -> Result<Self> {
         let address = std::env::var("VMS_ADDRESS")
             .map_err(|_| Error::Config("VMS_ADDRESS must be set".into()))?;
@@ -752,10 +821,15 @@ impl Builder {
                 "VMS_DANGER_ACCEPT_INVALID_CERTS is set — TLS certificate validation is disabled"
             );
         }
+        let ca_certs = match std::env::var(CA_CERT_FILE_VAR) {
+            Ok(path) if !path.trim().is_empty() => vec![read_ca_pem(path.trim())?],
+            _ => Vec::new(),
+        };
         Ok(Self {
             address: Some(address),
             auth: Some(auth),
             accept_invalid_certs,
+            ca_certs,
             ..Default::default()
         })
     }
@@ -784,10 +858,23 @@ impl Builder {
             }
         };
 
+        if self.accept_invalid_certs && !self.ca_certs.is_empty() {
+            tracing::warn!(
+                "TLS certificate validation is disabled, so the CA certificate(s) supplied \
+                 are not used; drop danger_accept_invalid_certs to validate against them"
+            );
+        }
+
         let base = normalize_base_url(&address)?;
-        let http = reqwest::Client::builder()
+        let mut http = reqwest::Client::builder()
             .timeout(self.timeout.unwrap_or(Duration::from_secs(30)))
-            .danger_accept_invalid_certs(self.accept_invalid_certs)
+            .danger_accept_invalid_certs(self.accept_invalid_certs);
+        for ca in &self.ca_certs {
+            for cert in parse_ca_bundle(&ca.pem, &ca.source)? {
+                http = http.add_root_certificate(cert);
+            }
+        }
+        let http = http
             .default_headers({
                 let mut h = header::HeaderMap::new();
                 h.insert(
@@ -800,7 +887,21 @@ impl Builder {
                 );
                 h
             })
-            .build()?;
+            // Config, not Http: a failure here is the TLS backend refusing
+            // what we handed it — most often a supplied CA whose PEM body is
+            // not a certificate — and never a transport problem. reqwest's own
+            // Display is a bare "builder error", so append the cause chain,
+            // which is where the detail actually lives.
+            .build()
+            .map_err(|e| {
+                let mut msg = format!("failed to construct the HTTP client: {e}");
+                let mut cause: Option<&dyn std::error::Error> = std::error::Error::source(&e);
+                while let Some(c) = cause {
+                    msg.push_str(&format!(": {c}"));
+                    cause = c.source();
+                }
+                Error::Config(msg)
+            })?;
 
         Ok(VastClient {
             inner: Arc::new(Inner {
@@ -832,6 +933,39 @@ fn normalize_base_url(addr: &str) -> Result<Url> {
         parsed.port().map(|p| format!(":{p}")).unwrap_or_default()
     );
     Ok(Url::parse(&format!("{host}{API_BASE_PATH}"))?)
+}
+
+/// Read a PEM CA file named by `VMS_CA_CERT_FILE`, tagging it with the path so
+/// a later parse failure can say which file was wrong.
+fn read_ca_pem(path: &str) -> Result<CaPem> {
+    let pem = std::fs::read(path)
+        .map_err(|e| Error::Config(format!("{CA_CERT_FILE_VAR}: cannot read {path}: {e}")))?;
+    Ok(CaPem {
+        pem,
+        source: path.to_string(),
+    })
+}
+
+/// Read the PEM framing of a bundle into the certificates reqwest will trust as
+/// roots. Each certificate's DER body stays unparsed here; rustls validates it
+/// when [`Builder::build`] assembles the client, which maps that failure to
+/// [`Error::Config`] too.
+///
+/// The empty case is an error rather than an empty list. `from_pem_bundle`
+/// reports success on input holding no PEM block at all — a placeholder never
+/// filled in, an empty ConfigMap key, an HTML error page saved as a `.crt` —
+/// and silently trusting nothing extra would surface only as a handshake
+/// failure on the first request, pointing at the network rather than at the
+/// file.
+fn parse_ca_bundle(pem: &[u8], source: &str) -> Result<Vec<reqwest::Certificate>> {
+    let certs = reqwest::Certificate::from_pem_bundle(pem)
+        .map_err(|e| Error::Config(format!("{source}: invalid PEM certificate: {e}")))?;
+    if certs.is_empty() {
+        return Err(Error::Config(format!(
+            "{source}: no PEM certificate found (expected a -----BEGIN CERTIFICATE----- block)"
+        )));
+    }
+    Ok(certs)
 }
 
 /// Parse an env-var-style boolean. Accepts the usual unix-ish synonyms
@@ -920,6 +1054,165 @@ mod tests {
         assert!(
             !dbg.contains("super-secret-token-value"),
             "token leaked into Debug output: {dbg}"
+        );
+    }
+
+    /// A self-signed CA, valid until 2126, generated purely for these tests:
+    /// `openssl req -x509 -newkey rsa:2048 -keyout /dev/null -nodes
+    ///  -subj "/CN=vast-rs test CA" -days 36500`. Nothing trusts it.
+    const TEST_CA_PEM: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIDFzCCAf+gAwIBAgIUJpxwTFqrX/16i0njladfR5Q3nzowDQYJKoZIhvcNAQEL
+BQAwGjEYMBYGA1UEAwwPdmFzdC1ycyB0ZXN0IENBMCAXDTI2MDgyNTE5MzIyMloY
+DzIxMjYwODAxMTkzMjIyWjAaMRgwFgYDVQQDDA92YXN0LXJzIHRlc3QgQ0EwggEi
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCsIPh1QlswgmSDVth9XwD7m6cM
+ruKNkZKThKbG8xLm43n/aw+h4BAZCIAVX3q/ccTymGLaUyeGQJ+nReVTpO0dXNCT
+HqdDlfspUaPtFw83F01DCniqI5riUzTD5GA7mg4NJ5hpxpeyaDfvU/iziyM+nLSu
+SqDpQ2wDY4UEa9C2BHRDXiy3EjsM4hQhOfCgA7pttty0qOxWVXClQiAEStugn/Rf
+TP/iaA5Igpmqr/w3Tk4MxCAfiVSrVGeyu4VCA5XQ4rbOXqxmwp1zZ3szodmenqYJ
+BUN9kWU1tPV4cXjaVi138Huclpx9qtd3V6YZQ+pSDwMuvi0rxOi95BeGSuUJAgMB
+AAGjUzBRMB0GA1UdDgQWBBSG+J0ZGa5Z3GPSaHQtksCRVUYV+zAfBgNVHSMEGDAW
+gBSG+J0ZGa5Z3GPSaHQtksCRVUYV+zAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3
+DQEBCwUAA4IBAQB5SvhVadIL7Sh7OWkpqTVuX9qBKjD+0HfNDnpNPBHG+u225tVI
+YtutYWf7R6o4kuxqseVqiXzYwMuDZUVn58q9oKW5SrqHwBXOVpdy0TGxxhH54wXJ
+S4IwYTK/OhGBT9DPrZU67feaB7uHh8sEY8Ylroa10CsX+c1VvHcKKtTytIClKd8i
+uKkNXFI3uSARJmMGkY+pjl9Z/1kn13LzgTYy/CxAz49mfELMDqBGPQ07P0n0GKNl
+5YkwZuz2mU/jzNKv0LhtiZDXYgXALoZfNmp2WnJGo1xoie/+YWZT8qHDYpb+b6Nu
+JvLMX92kU9FM/XiQMQjc2G8K1uis9IW+k4X+
+-----END CERTIFICATE-----
+";
+
+    /// A path in the temp dir unique to this process and call site. Cheaper
+    /// than a `tempfile` dev-dependency for the two tests that need a file,
+    /// and `set_var` is not an option: edition 2024 makes it `unsafe`, which
+    /// `unsafe_code = "forbid"` rules out crate-wide.
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("vast-rs-{}-{tag}.pem", std::process::id()))
+    }
+
+    #[test]
+    fn ca_certificate_accepts_a_pem_bundle() {
+        // Two concatenated certs, since a bundle is the shape a k8s
+        // ConfigMap or an /etc/ssl bundle actually holds.
+        let bundle = format!("{TEST_CA_PEM}{TEST_CA_PEM}");
+        let certs = parse_ca_bundle(bundle.as_bytes(), "test").unwrap();
+        assert_eq!(certs.len(), 2);
+
+        Builder::default()
+            .address("vms.example.com")
+            .token("tok")
+            .ca_certificate(TEST_CA_PEM)
+            .build()
+            .expect("a valid CA should build");
+    }
+
+    #[test]
+    fn ca_certificate_rejects_pem_holding_no_certificate() {
+        // The branch that exists because from_pem_bundle returns Ok(vec![])
+        // here: an unfilled placeholder trusts nothing and must not build.
+        for junk in [
+            "",
+            "   \n",
+            "REPLACE-ME: paste the PEM of the issuing CA here\n",
+            "<html><body>403 Forbidden</body></html>",
+        ] {
+            let err = parse_ca_bundle(junk.as_bytes(), "some-file.crt")
+                .expect_err("input with no PEM block must be rejected");
+            assert!(
+                matches!(err, Error::Config(_)),
+                "expected a Config error, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("some-file.crt"),
+                "error should name the source: {err}"
+            );
+
+            // And the rejection must survive the trip through the builder,
+            // rather than being dropped somewhere in build().
+            let err = Builder::default()
+                .address("vms.example.com")
+                .token("tok")
+                .ca_certificate(junk)
+                .build()
+                .expect_err("builder must refuse a PEM with no certificate");
+            assert!(matches!(err, Error::Config(_)), "got {err:?}");
+        }
+    }
+
+    #[test]
+    fn ca_certificate_rejects_a_pem_body_that_is_not_a_certificate() {
+        // Distinct from the empty case, and caught one layer later: the PEM
+        // framing is well-formed, so from_pem_bundle hands back a Certificate
+        // holding unparsed DER. rustls rejects it when reqwest assembles the
+        // root store, which is inside our build(). Assert that arrives as a
+        // Config error and not as Http — the `#[from] reqwest::Error` route
+        // would file this misconfiguration under "HTTP error: builder error".
+        let corrupt =
+            "-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydGlmaWNhdGU=\n-----END CERTIFICATE-----\n";
+        assert_eq!(
+            parse_ca_bundle(corrupt.as_bytes(), "corrupt.crt")
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let err = Builder::default()
+            .address("vms.example.com")
+            .token("tok")
+            .ca_certificate(corrupt)
+            .build()
+            .expect_err("a non-certificate PEM body must not build");
+        assert!(matches!(err, Error::Config(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("HTTP client"),
+            "message should say what failed: {err}"
+        );
+    }
+
+    #[test]
+    fn read_ca_pem_reports_a_missing_file_with_its_path() {
+        let missing = temp_path("definitely-absent");
+        let _ = std::fs::remove_file(&missing);
+        let err = read_ca_pem(missing.to_str().unwrap())
+            .expect_err("an unreadable path must not fall back to the public roots");
+        assert!(matches!(err, Error::Config(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains(CA_CERT_FILE_VAR), "should name the var: {msg}");
+        assert!(
+            msg.contains(missing.to_str().unwrap()),
+            "should name the path: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_ca_pem_loads_a_file_and_tags_it_with_the_path() {
+        let path = temp_path("valid-ca");
+        std::fs::write(&path, TEST_CA_PEM).unwrap();
+
+        let ca = read_ca_pem(path.to_str().unwrap()).unwrap();
+        assert_eq!(ca.source, path.to_str().unwrap());
+        assert_eq!(parse_ca_bundle(&ca.pem, &ca.source).unwrap().len(), 1);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn debug_output_summarizes_ca_pem_instead_of_dumping_bytes() {
+        let builder = Builder::default()
+            .address("vms.example.com")
+            .token("tok")
+            .ca_certificate(TEST_CA_PEM);
+        let dbg = format!("{builder:?}");
+        assert!(
+            dbg.contains("CaPem(ca_certificate(), "),
+            "CA should be summarized: {dbg}"
+        );
+        // The derived Debug on Vec<u8> renders bytes as decimal integers;
+        // "45, 45, 45" is the "---" that opens every PEM.
+        assert!(!dbg.contains("45, 45, 45"), "PEM bytes leaked: {dbg}");
+        assert!(
+            dbg.contains("vms.example.com"),
+            "address should show: {dbg}"
         );
     }
 
