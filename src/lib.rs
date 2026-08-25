@@ -44,6 +44,24 @@
 //! [`VastClient::from_env`] reads `VMS_ADDRESS` plus either `VMS_TOKEN` or
 //! `VMS_USER` + `VMS_PASSWORD` (and optional `VMS_TENANT`).
 //!
+//! ### A VMS with a private CA
+//!
+//! The client validates against the Mozilla root set compiled into the binary,
+//! not the host's certificate store, so a VMS whose certificate comes from a
+//! private CA needs that CA passed in explicitly — via
+//! [`Builder::ca_certificate`] or the `VMS_CA_CERT_FILE` env var. Installing it
+//! on the machine, or setting `SSL_CERT_FILE`, has no effect.
+//!
+//! ```rust,no_run
+//! # use vast::VastClient;
+//! let client = VastClient::builder()
+//!     .address("vms.example.com")
+//!     .token("tok")
+//!     .ca_certificate(std::fs::read("/etc/vast-ca/ca.crt")?)
+//!     .build()?;
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! ## Models are forward-compatible
 //!
 //! Each resource model contains the stable fields you'll typically want

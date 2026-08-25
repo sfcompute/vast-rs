@@ -90,7 +90,30 @@ let client = vast::VastClient::from_env()?;
 | `VMS_USER`     | Username for credential-based auth                                 |
 | `VMS_PASSWORD` | Password for credential-based auth                                 |
 | `VMS_TENANT`   | Tenant name — **required for tenant admin accounts**, omit for cluster admins |
+| `VMS_CA_CERT_FILE` | Path to a PEM CA certificate (or bundle) to trust in addition to the public roots. Equivalent to `.ca_certificate(bytes)` on the builder. See [TLS](#tls). |
 | `VMS_DANGER_ACCEPT_INVALID_CERTS` | Set to `1` / `true` / `yes` / `on` to disable TLS certificate validation. **Development / self-signed VMS deployments only.** Equivalent to `.danger_accept_invalid_certs(true)` on the builder. |
+
+---
+
+## TLS
+
+The client validates the VMS certificate against the Mozilla root set **compiled into the binary** (reqwest's `rustls-tls`). It does not read the host's certificate directory and does not honor `SSL_CERT_FILE`, so a VMS whose certificate comes from a private CA — including VAST's factory CA — needs that CA passed in explicitly. Installing it on the machine or in the container image has no effect.
+
+```rust
+let client = VastClient::builder()
+    .address("vms.example.com")
+    .token("tok")
+    .ca_certificate(std::fs::read("/etc/vast-ca/ca.crt")?)
+    .build()?;
+```
+
+Or set `VMS_CA_CERT_FILE=/etc/vast-ca/ca.crt` and use `from_env()`.
+
+The argument is a PEM certificate or a bundle of several, added to the public roots rather than replacing them. Repeated `.ca_certificate()` calls accumulate, so endpoints anchored to different roots can both be trusted.
+
+Failures are reported at `build()`, as `Error::Config`, and name the file: an unreadable `VMS_CA_CERT_FILE` path, a PEM holding no `-----BEGIN CERTIFICATE-----` block (an unfilled placeholder, an empty ConfigMap key), or a block whose body is not a certificate. None of these fall back to the public roots — that would turn a config mistake into a confusing handshake failure on the first request.
+
+`.danger_accept_invalid_certs(true)` disables validation altogether and takes precedence, so a CA supplied alongside it is unused; the client logs a warning when both are set.
 
 ---
 
@@ -316,7 +339,8 @@ let client = VastClient::builder()
     .token("tok")                                 // or .credentials("user", "pass")
     .tenant("acme")                               // required for tenant admin accounts
     .timeout(Duration::from_secs(60))             // default: 30s
-    .danger_accept_invalid_certs(true)            // for self-signed certs; dev only
+    .ca_certificate(ca_pem)                       // trust a private CA — see TLS
+    .danger_accept_invalid_certs(true)            // skip validation entirely; dev only
     .max_attempts(3)                              // GET retries (default: 3, set 1 to disable)
     .retry_backoff(Duration::from_secs(1))        // exponential backoff base (default: 1s)
     .build()?;
