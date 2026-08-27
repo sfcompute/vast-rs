@@ -16,6 +16,9 @@ use crate::error::{Error, Result};
 /// Async client for the VAST Data Management System (VMS) REST API.
 ///
 /// Cheap to clone — all clones share the same connection pool and cached JWT.
+///
+/// The paths named on the accessors below are relative to the API root, which is
+/// `/api/` unless [`Builder::api_version`] sets a version, then `/api/<version>/`.
 #[derive(Clone, Debug)]
 pub struct VastClient {
     inner: Arc<Inner>,
@@ -24,6 +27,9 @@ pub struct VastClient {
 #[derive(Debug)]
 struct Inner {
     http: reqwest::Client,
+    /// API root every request path is joined onto: `<scheme>://<host>/api/`,
+    /// carrying the configured API version as a further segment when one is set
+    /// (`…/api/v7/`).
     base: Url,
     auth: Auth,
     /// Cached bearer token. Held inside `SecretString` so it can't leak
@@ -413,6 +419,7 @@ impl VastClient {
         fields(
             http.method = %method,
             http.path = %path,
+            http.url = tracing::field::Empty,
             http.status = tracing::field::Empty,
             duration_ms = tracing::field::Empty,
         ),
@@ -431,6 +438,7 @@ impl VastClient {
         B: Serialize + ?Sized,
     {
         let url = self.inner.base.join(path)?;
+        tracing::Span::current().record("http.url", url.as_str());
         // Expose the secret only at the wire boundary. `bearer_auth`
         // marks the resulting `Authorization` header as sensitive, so
         // reqwest's tracing won't log it.
@@ -457,7 +465,7 @@ impl VastClient {
     /// Return a valid bearer token, performing the credential exchange
     /// on first use. Uses double-checked locking so concurrent first
     /// callers exchange credentials exactly once instead of racing
-    /// to hit `/api/token/`.
+    /// to hit the token endpoint.
     async fn bearer_token(&self) -> Result<CachedToken> {
         // Fast path: another task already populated the cache.
         if let Some(t) = self.inner.cached_token.read().await.as_ref() {
@@ -653,12 +661,17 @@ const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 /// [`Builder::ca_certificate`].
 const CA_CERT_FILE_VAR: &str = "VMS_CA_CERT_FILE";
 
+/// Env var naming the REST API version to address. See
+/// [`Builder::api_version`].
+const API_VERSION_VAR: &str = "VMS_API_VERSION";
+
 /// Builder for [`VastClient`]. Obtain via [`VastClient::builder`].
 #[derive(Default, Debug)]
 pub struct Builder {
     address: Option<String>,
     auth: Option<Auth>,
     tenant: Option<String>,
+    api_version: Option<String>,
     accept_invalid_certs: bool,
     ca_certs: Vec<CaPem>,
     timeout: Option<Duration>,
@@ -688,6 +701,10 @@ impl std::fmt::Debug for CaPem {
 impl Builder {
     /// VMS hostname or IP (the `https://` scheme and `/api/` base path are
     /// added automatically if absent). Required.
+    ///
+    /// The API version does not go here — an address carrying a version segment
+    /// is rejected at [`build`](Self::build). Use
+    /// [`api_version`](Self::api_version) instead.
     pub fn address(mut self, address: impl Into<String>) -> Self {
         self.address = Some(address.into());
         self
@@ -714,6 +731,18 @@ impl Builder {
     /// returns 401 for tenant-scoped users.
     pub fn tenant(mut self, tenant: impl Into<String>) -> Self {
         self.tenant = Some(tenant.into());
+        self
+    }
+
+    /// REST API version to address, as the path segment it becomes: `"v7"`
+    /// sends every request to `https://<address>/api/v7/…`. Omitted — or given
+    /// as an empty string — the client addresses the unversioned `/api/…`
+    /// routes, which is what a VMS resolves to its oldest available version.
+    ///
+    /// [`build`](Self::build) rejects anything that is not a `v`-and-digits
+    /// segment, since the value goes straight into the request path.
+    pub fn api_version(mut self, version: impl Into<String>) -> Self {
+        self.api_version = Some(version.into());
         self
     }
 
@@ -774,9 +803,9 @@ impl Builder {
     /// are sent at most once regardless of this setting, since they
     /// may be non-idempotent.
     ///
-    /// The same budget applies to the credential exchange against
-    /// `/api/token/`, which is retried on `5xx` / `429` / transport
-    /// failures. Rejected credentials (`401` / `403`) are never retried.
+    /// The same budget applies to the credential exchange against the token
+    /// endpoint, which is retried on `5xx` / `429` / transport failures.
+    /// Rejected credentials (`401` / `403`) are never retried.
     pub fn max_attempts(mut self, n: u32) -> Self {
         self.max_attempts = Some(n.max(1));
         self
@@ -795,6 +824,9 @@ impl Builder {
     ///
     /// Also reads:
     ///
+    /// * `VMS_API_VERSION` — REST API version to address, as
+    ///   [`api_version`](Self::api_version): `v7` sends every request to
+    ///   `/api/v7/…`. Unset or empty addresses the unversioned `/api/…` routes.
     /// * `VMS_CA_CERT_FILE` — path to a PEM CA certificate or bundle to trust
     ///   in addition to the public roots, as
     ///   [`ca_certificate`](Self::ca_certificate). A path that cannot be read
@@ -828,6 +860,7 @@ impl Builder {
         Ok(Self {
             address: Some(address),
             auth: Some(auth),
+            api_version: std::env::var(API_VERSION_VAR).ok(),
             accept_invalid_certs,
             ca_certs,
             ..Default::default()
@@ -865,7 +898,11 @@ impl Builder {
             );
         }
 
-        let base = normalize_base_url(&address)?;
+        let api_version = match self.api_version.as_deref() {
+            Some(raw) => normalize_api_version(raw)?,
+            None => None,
+        };
+        let base = normalize_base_url(&address, api_version.as_deref())?;
         let mut http = reqwest::Client::builder()
             .timeout(self.timeout.unwrap_or(Duration::from_secs(30)))
             .danger_accept_invalid_certs(self.accept_invalid_certs);
@@ -916,23 +953,74 @@ impl Builder {
     }
 }
 
-fn normalize_base_url(addr: &str) -> Result<Url> {
+/// Resolve the API root every request path is joined onto.
+///
+/// `addr` may be a bare host, a `host:port`, or a full URL; the scheme defaults
+/// to https. Its path is replaced with `/api/`, except a path that already ends
+/// there, which is kept — that is what lets a VMS behind a reverse-proxy prefix
+/// (`https://gw/vast/api/`) resolve. `version`, when set, becomes one further
+/// segment: `/api/v7/`.
+///
+/// The trailing slash is load-bearing: every request path is resolved with
+/// `Url::join`, which replaces the last segment of a base that lacks one.
+fn normalize_base_url(addr: &str, version: Option<&str>) -> Result<Url> {
     let with_scheme = if addr.starts_with("http://") || addr.starts_with("https://") {
         addr.to_string()
     } else {
         format!("https://{addr}")
     };
     let parsed = Url::parse(&with_scheme)?;
-    if parsed.path().ends_with(API_BASE_PATH) {
-        return Ok(parsed);
+
+    let path = parsed.path().trim_end_matches('/');
+    // An address carrying its own version segment is a misconfiguration, not a
+    // second way to set one: two sources for one value is a precedence rule
+    // nobody remembers.
+    if path.rsplit('/').next().is_some_and(is_version_segment) {
+        return Err(Error::Config(format!(
+            "address {addr:?} carries an API version in its path; \
+             set the version with {API_VERSION_VAR} (or .api_version(\"…\")) instead"
+        )));
     }
-    let host = format!(
+    let prefix = path.strip_suffix("/api").unwrap_or("");
+
+    let origin = format!(
         "{}://{}{}",
         parsed.scheme(),
         parsed.host_str().unwrap_or(""),
         parsed.port().map(|p| format!(":{p}")).unwrap_or_default()
     );
-    Ok(Url::parse(&format!("{host}{API_BASE_PATH}"))?)
+    let version = version.map(|v| format!("{v}/")).unwrap_or_default();
+    Ok(Url::parse(&format!(
+        "{origin}{prefix}{API_BASE_PATH}{version}"
+    ))?)
+}
+
+/// Validate a configured API version and normalize it to a bare path segment.
+///
+/// Empty — or whitespace, or a lone `/` — reads as unset. A Kubernetes env var
+/// rendered from an absent value arrives as `""`, and that has to mean "address
+/// the unversioned routes" rather than build a `/api//` path no VMS serves.
+///
+/// Anything else must look like `v7`, because the value is interpolated
+/// straight into the request path: rejecting it at `build()` names the bad
+/// config, where accepting it would send every request to a path the VMS has
+/// never heard of and report it as a 404 per call.
+fn normalize_api_version(raw: &str) -> Result<Option<String>> {
+    let version = raw.trim().trim_matches('/');
+    if version.is_empty() {
+        return Ok(None);
+    }
+    if !is_version_segment(version) {
+        return Err(Error::Config(format!(
+            "invalid API version {raw:?}: expected a segment like \"v7\""
+        )));
+    }
+    Ok(Some(version.to_string()))
+}
+
+/// `true` for a VMS API version path segment: `v` followed by digits.
+fn is_version_segment(s: &str) -> bool {
+    s.len() > 1 && s.starts_with('v') && s[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Read a PEM CA file named by `VMS_CA_CERT_FILE`, tagging it with the path so
@@ -992,19 +1080,19 @@ mod tests {
 
     #[test]
     fn normalize_base_url_host_only_adds_https_and_api_path() {
-        let u = normalize_base_url("vms.example.com").unwrap();
+        let u = normalize_base_url("vms.example.com", None).unwrap();
         assert_eq!(u.as_str(), "https://vms.example.com/api/");
     }
 
     #[test]
     fn normalize_base_url_host_port_preserves_port() {
-        let u = normalize_base_url("vms.example.com:8443").unwrap();
+        let u = normalize_base_url("vms.example.com:8443", None).unwrap();
         assert_eq!(u.as_str(), "https://vms.example.com:8443/api/");
     }
 
     #[test]
     fn normalize_base_url_full_https_url_with_api_path_passes_through() {
-        let u = normalize_base_url("https://vms.example.com/api/").unwrap();
+        let u = normalize_base_url("https://vms.example.com/api/", None).unwrap();
         assert_eq!(u.as_str(), "https://vms.example.com/api/");
     }
 
@@ -1012,7 +1100,7 @@ mod tests {
     fn normalize_base_url_http_scheme_preserved() {
         // Plain HTTP is used by the wiremock-backed tests and shouldn't
         // be rewritten to https.
-        let u = normalize_base_url("http://127.0.0.1:12345").unwrap();
+        let u = normalize_base_url("http://127.0.0.1:12345", None).unwrap();
         assert_eq!(u.as_str(), "http://127.0.0.1:12345/api/");
     }
 
@@ -1021,8 +1109,106 @@ mod tests {
         // If the caller passes a URL with a non-`/api/` path, we replace
         // it with `/api/` rather than appending. This matches the
         // expected base for `Url::join` to produce `<base>/clusters/`.
-        let u = normalize_base_url("https://vms.example.com/legacy/").unwrap();
+        let u = normalize_base_url("https://vms.example.com/legacy/", None).unwrap();
         assert_eq!(u.as_str(), "https://vms.example.com/api/");
+    }
+
+    #[test]
+    fn normalize_base_url_appends_the_api_version() {
+        for addr in [
+            "vms.example.com",
+            "https://vms.example.com",
+            "https://vms.example.com/api/",
+        ] {
+            let u = normalize_base_url(addr, Some("v7")).unwrap();
+            assert_eq!(u.as_str(), "https://vms.example.com/api/v7/", "addr {addr}");
+        }
+    }
+
+    #[test]
+    fn normalize_base_url_keeps_a_reverse_proxy_prefix_ahead_of_the_version() {
+        let u = normalize_base_url("https://gw.example.com/vast/api/", Some("v7")).unwrap();
+        assert_eq!(u.as_str(), "https://gw.example.com/vast/api/v7/");
+    }
+
+    /// The version has exactly one source, so an address carrying its own is
+    /// refused rather than honoured or quietly stripped — either would make the
+    /// version depend on which of the two config values won.
+    #[test]
+    fn normalize_base_url_rejects_a_version_in_the_address() {
+        for version in [None, Some("v7")] {
+            let err = normalize_base_url("https://vms.example.com/api/v5/", version)
+                .expect_err("a version in the address must not be accepted");
+            assert!(matches!(err, Error::Config(_)), "got {err:?}");
+            assert!(
+                err.to_string().contains(API_VERSION_VAR),
+                "error should name the var to use: {err}"
+            );
+        }
+    }
+
+    /// A version resolves as one path segment, so `Url::join` on a request path
+    /// must land under it rather than replacing it.
+    #[test]
+    fn versioned_base_joins_request_paths_under_the_version() {
+        let base = normalize_base_url("vms.example.com", Some("v7")).unwrap();
+        assert_eq!(
+            base.join("users/12/access_keys/").unwrap().as_str(),
+            "https://vms.example.com/api/v7/users/12/access_keys/"
+        );
+        assert_eq!(
+            base.join("token/").unwrap().as_str(),
+            "https://vms.example.com/api/v7/token/"
+        );
+    }
+
+    #[test]
+    fn normalize_api_version_reads_blank_as_unversioned() {
+        // A k8s env var rendered from an absent value arrives as "".
+        for raw in ["", "   ", "\n", "/"] {
+            assert_eq!(normalize_api_version(raw).unwrap(), None, "raw {raw:?}");
+        }
+    }
+
+    #[test]
+    fn normalize_api_version_trims_to_a_bare_segment() {
+        for raw in ["v7", " v7 ", "v7/", "/v7/", "\tv7\n"] {
+            assert_eq!(
+                normalize_api_version(raw).unwrap().as_deref(),
+                Some("v7"),
+                "raw {raw:?}"
+            );
+        }
+        assert_eq!(
+            normalize_api_version("v12").unwrap().as_deref(),
+            Some("v12")
+        );
+    }
+
+    #[test]
+    fn normalize_api_version_rejects_anything_else() {
+        // Each of these would otherwise be interpolated into every request
+        // path: a bad segment, an escape out of it, or a whole extra level.
+        for raw in [
+            "7", "V7", "v", "vv7", "v7beta", "latest", "v7/users", "../v7", "v 7", "v7?x=1",
+        ] {
+            let err = normalize_api_version(raw)
+                .expect_err(&format!("{raw:?} should not be accepted as a version"));
+            assert!(matches!(err, Error::Config(_)), "{raw:?} gave {err:?}");
+        }
+    }
+
+    #[test]
+    fn build_rejects_an_invalid_api_version() {
+        // The rejection has to survive the trip through build(), not just
+        // exist as a helper.
+        let err = Builder::default()
+            .address("vms.example.com")
+            .token("tok")
+            .api_version("seven")
+            .build()
+            .expect_err("builder must refuse a malformed version");
+        assert!(matches!(err, Error::Config(_)), "got {err:?}");
     }
 
     #[test]

@@ -90,6 +90,7 @@ let client = vast::VastClient::from_env()?;
 | `VMS_USER`     | Username for credential-based auth                                 |
 | `VMS_PASSWORD` | Password for credential-based auth                                 |
 | `VMS_TENANT`   | Tenant name — **required for tenant admin accounts**, omit for cluster admins |
+| `VMS_API_VERSION` | REST API version to address, as the path segment it becomes (e.g. `v7`): every request goes to `/api/v7/…`. Unset or empty addresses the unversioned `/api/…` routes. Equivalent to `.api_version("v7")` on the builder. See [API version](#api-version). |
 | `VMS_CA_CERT_FILE` | Path to a PEM CA certificate (or bundle) to trust in addition to the public roots. Equivalent to `.ca_certificate(bytes)` on the builder. See [TLS](#tls). |
 | `VMS_DANGER_ACCEPT_INVALID_CERTS` | Set to `1` / `true` / `yes` / `on` to disable TLS certificate validation. **Development / self-signed VMS deployments only.** Equivalent to `.danger_accept_invalid_certs(true)` on the builder. |
 
@@ -338,6 +339,7 @@ let client = VastClient::builder()
     .address("vms.example.com")                  // required — scheme added automatically
     .token("tok")                                 // or .credentials("user", "pass")
     .tenant("acme")                               // required for tenant admin accounts
+    .api_version("v7")                            // omit for the unversioned /api/ routes
     .timeout(Duration::from_secs(60))             // default: 30s
     .ca_certificate(ca_pem)                       // trust a private CA — see TLS
     .danger_accept_invalid_certs(true)            // skip validation entirely; dev only
@@ -345,6 +347,12 @@ let client = VastClient::builder()
     .retry_backoff(Duration::from_secs(1))        // exponential backoff base (default: 1s)
     .build()?;
 ```
+
+### API version
+
+By default the client addresses the unversioned routes — `https://<address>/api/clusters/` — which a VMS resolves to its own current API version. `.api_version("v7")` (or `VMS_API_VERSION=v7`) inserts the version as a path segment instead, so every request goes to `https://<address>/api/v7/clusters/`. The credential exchange moves with it: `/api/v7/token/`.
+
+Which versions a cluster serves depends on its software release, so the version belongs in per-deployment configuration rather than in code. It is validated at `build()` — a value that is not a `v`-and-digits segment is an `Error::Config`, rather than a path the VMS 404s on for every call. Put it here and not in `.address()`: an address carrying its own version segment is rejected, so there is only ever one place the version comes from.
 
 ### Retries
 

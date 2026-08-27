@@ -14,6 +14,10 @@
 //! # Tenant-scoped user:
 //! VMS_ADDRESS=localhost:2443 VMS_USER=alice VMS_PASSWORD=secret VMS_TENANT=acme \
 //!     cargo test --features integration
+//!
+//! # Against one specific API version (default: the unversioned routes):
+//! VMS_ADDRESS=localhost:2443 VMS_TOKEN=<tok> VMS_API_VERSION=v7 \
+//!     cargo test --features integration
 //! ```
 //!
 //! ## Safety contract
@@ -56,7 +60,7 @@ fn test_name(suffix: &str) -> String {
 
 /// Build a client from environment variables.
 ///
-/// Reads: `VMS_ADDRESS`, then one of:
+/// Reads: `VMS_ADDRESS`, optional `VMS_API_VERSION`, then one of:
 ///   - `VMS_TOKEN`  — static token auth (preferred for CI)
 ///   - `VMS_USER` + `VMS_PASSWORD` + optional `VMS_TENANT`
 fn build_client() -> VastClient {
@@ -66,6 +70,12 @@ fn build_client() -> VastClient {
     let mut builder = VastClient::builder()
         .address(address)
         .danger_accept_invalid_certs(true); // self-signed cert on local/dev clusters
+
+    // Set it to run this suite against one specific API version; unset
+    // exercises the unversioned routes.
+    if let Ok(version) = env::var("VMS_API_VERSION") {
+        builder = builder.api_version(version);
+    }
 
     if let Ok(token) = env::var("VMS_TOKEN") {
         builder = builder.token(token);

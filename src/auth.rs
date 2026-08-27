@@ -74,7 +74,7 @@ impl Auth {
                 password,
                 tenant,
             } => {
-                // Cluster admins POST /api/token/; tenant admins POST /api/token/{name}.
+                // Cluster admins POST <base>token/; tenant admins POST <base>token/{name}.
                 // Tenant names may legally contain characters (`/`, ` `,
                 // `?`, `#`) that would otherwise break out of the path
                 // segment, so use `path_segments_mut().push()` to do the
@@ -122,7 +122,7 @@ struct ExchangeFailure {
     error: Error,
 }
 
-/// One `POST /api/token/` round-trip.
+/// One `POST` round-trip against the token endpoint.
 async fn exchange(
     http: &reqwest::Client,
     url: &Url,
