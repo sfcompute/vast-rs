@@ -87,21 +87,100 @@ impl Paginate for PageParams {
     }
 }
 
-/// Untagged enum that decodes both the DRF paginated wrapper and a bare
-/// array, so callers don't have to care which shape an endpoint returns
-/// on a given cluster version or configuration.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
+/// Decodes both the DRF paginated wrapper and a bare array, so callers
+/// don't have to care which shape an endpoint returns on a given cluster
+/// version or configuration.
+///
+/// Dispatch is on the JSON shape — object vs array — via a manual
+/// `Deserialize` rather than `#[serde(untagged)]`. Untagged looks like the
+/// natural fit here but is actively harmful: any error *inside* a variant
+/// (one unexpected field type in one item of `results`) makes serde try the
+/// next variant, fail that too, and report only "data did not match any
+/// variant of untagged enum PaginatedResponse" — naming neither the field,
+/// the item, nor the byte offset. Dispatching on the shape first commits to
+/// one variant, so the real error survives.
+#[derive(Debug)]
 pub(crate) enum PaginatedResponse<T> {
     /// Standard DRF wrapper: `{count, next, previous, results}`.
     Paginated {
-        count: usize,
+        count: Option<usize>,
         next: Option<String>,
         previous: Option<String>,
         results: Vec<T>,
     },
     /// Plain array (some endpoints don't paginate by default).
     Bare(Vec<T>),
+}
+
+/// The wrapper shape, as its own struct so field-level errors keep their
+/// context. Every field but `results` is optional: `count` is absent on
+/// endpoints that don't total the collection, and `next`/`previous` are
+/// absent on an unpaginated response. `results` is required — an object
+/// without it isn't a list response, and decoding it to an empty page
+/// would silently turn a protocol change into "no users found".
+#[derive(Deserialize)]
+struct Wrapper<T> {
+    #[serde(default)]
+    count: Option<usize>,
+    #[serde(default)]
+    next: Option<String>,
+    #[serde(default)]
+    previous: Option<String>,
+    #[serde(default = "no_results")]
+    results: Option<Vec<T>>,
+}
+
+fn no_results<T>() -> Option<Vec<T>> {
+    None
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for PaginatedResponse<T> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ShapeVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for ShapeVisitor<T> {
+            type Value = PaginatedResponse<T>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a list, or an object with a `results` list")
+            }
+
+            fn visit_seq<A>(self, seq: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                Vec::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
+                    .map(PaginatedResponse::Bare)
+            }
+
+            fn visit_map<A>(self, map: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let w =
+                    Wrapper::<T>::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(PaginatedResponse::Paginated {
+                    count: w.count,
+                    next: w.next,
+                    previous: w.previous,
+                    results: w
+                        .results
+                        .ok_or_else(|| serde::de::Error::missing_field("results"))?,
+                })
+            }
+
+            /// A `null` body is an empty collection, matching the
+            /// missing-and-null-are-the-same handling on every model.
+            fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(PaginatedResponse::Bare(Vec::new()))
+            }
+        }
+
+        deserializer.deserialize_any(ShapeVisitor(std::marker::PhantomData))
+    }
 }
 
 impl<T> PaginatedResponse<T> {
@@ -120,7 +199,7 @@ impl<T> PaginatedResponse<T> {
                 results,
             } => Page {
                 items: results,
-                count: Some(count),
+                count,
                 next_page: page_from_link(next.as_deref()),
                 previous_page: page_from_link(previous.as_deref()),
             },
@@ -438,28 +517,45 @@ crud!(ro Nodes, Node, "nodes/", filters = ListNodesParams);
 // Users
 // ===========================================================================
 
+/// One S3 access key as reported on a [`User`] by `GET /users/`:
+///
+/// ```json
+/// { "access_key": "VCBBN8CKT71SSJ5W7ZS0", "enabled": true,
+///   "tenant_id": 13, "creation_time": "2026-08-27T13:45:19Z" }
+/// ```
+///
+/// Note this is *not* [`UserKeyPair`] — that's the create-time response,
+/// and the only place the secret key is ever disclosed.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct UserAccessKey(pub String, pub String);
-
-impl UserAccessKey {
-    pub fn id(&self) -> &str {
-        &self.0
-    }
-    pub fn status(&self) -> &str {
-        &self.1
-    }
+#[serde(default)]
+pub struct UserAccessKey {
+    /// S3 access key ID.
+    #[serde(deserialize_with = "null_default")]
+    pub access_key: String,
+    /// Whether the key may currently authenticate.
+    #[serde(deserialize_with = "null_default")]
+    pub enabled: bool,
+    /// Owning tenant, when the VMS reports one.
+    pub tenant_id: Option<u64>,
+    /// When the key was generated, as the VMS formats it.
+    pub creation_time: Option<String>,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct User {
     pub id: u64,
+    #[serde(deserialize_with = "null_default")]
     pub name: String,
     pub uid: Option<u64>,
     pub email: Option<String>,
     pub enabled: Option<bool>,
     pub is_admin: Option<bool>,
+    #[serde(deserialize_with = "null_default")]
     pub s3_policies_ids: Vec<u64>,
+    #[serde(deserialize_with = "null_default")]
     pub access_keys: Vec<UserAccessKey>,
     #[serde(flatten)]
     pub extra: Extra,

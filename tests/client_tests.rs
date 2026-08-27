@@ -1232,6 +1232,160 @@ async fn users_full_crud() {
 }
 
 #[tokio::test]
+async fn users_list_parses_the_v8_bare_array_with_object_access_keys() {
+    // Sample body observed from `GET /api/v8/users`.
+    let server = MockServer::start().await;
+    let client = VastClient::builder()
+        .address(server.uri())
+        .token("t")
+        .api_version("v8")
+        .build()
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/api/v8/users/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "leading_group_name": null,
+            "password_is_set": false,
+            "s3_policies": [{ "id": 2, "name": "wksp_gMVtJIeW9mpMe328VS_8K" }],
+            "guid": "99184355-e291-4fa4-bca1-326e3ae28442",
+            "leading_gid": null,
+            "s3_policies_ids": [2],
+            "leading_group_gid": null,
+            "vid": 210,
+            "is_temporary_password": false,
+            "allow_delete_bucket": false,
+            "allow_create_bucket": false,
+            "gids": [],
+            "groups": [],
+            "uid": null,
+            "access_keys": [{
+                "access_key": "VCBBN8CKT71SSJ5W7ZS0",
+                "enabled": true,
+                "tenant_id": 13,
+                "creation_time": "2026-08-27T13:45:19Z",
+            }],
+            "s3_superuser": false,
+            "url": "https://vms.example.com/api/v8/users/17",
+            "group_count": 0,
+            "id": 17,
+            "title": "wksp_gMVtJIeW9mpMe328VS_8K",
+            "local_provider": { "id": 2, "name": "sfc_local_provider", "managed_by": ["TENANT_ADMIN"] },
+            "sid": "S-1-111-1183238264-576417486-722346891-541835072-19",
+            "name": "wksp_gMVtJIeW9mpMe328VS_8K",
+        }])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let users = client.users().list().await.unwrap();
+    assert_eq!(users.len(), 1);
+    let user = &users[0];
+    assert_eq!(user.id, 17);
+    assert_eq!(user.name, "wksp_gMVtJIeW9mpMe328VS_8K");
+    assert_eq!(user.uid, None);
+    assert_eq!(user.s3_policies_ids, vec![2]);
+
+    assert_eq!(user.access_keys.len(), 1);
+    let key = &user.access_keys[0];
+    assert_eq!(key.access_key, "VCBBN8CKT71SSJ5W7ZS0");
+    assert!(key.enabled);
+    assert_eq!(key.tenant_id, Some(13));
+    assert_eq!(key.creation_time.as_deref(), Some("2026-08-27T13:45:19Z"));
+
+    // Fields the slim model doesn't name stay reachable.
+    assert_eq!(user.extra["sid"].as_str().unwrap().len(), 51);
+    assert_eq!(user.extra["s3_policies"][0]["id"], 2);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn list_accepts_a_wrapper_without_count() {
+    // `count` is advisory metadata, not part of the contract for reading
+    // items: some VMS versions omit it (or send it as null) on list
+    // endpoints. Requiring it rejected the whole response.
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [{ "id": 1, "name": "alice" }, { "id": 2, "name": "bob" }],
+        })))
+        .mount(&server)
+        .await;
+
+    let page = client
+        .users()
+        .list_paged(&Default::default())
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.count, None);
+    assert_eq!(page.next_page, None);
+}
+
+#[tokio::test]
+async fn list_reads_a_null_body_as_an_empty_collection() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(null)))
+        .mount(&server)
+        .await;
+
+    assert!(client.users().list().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_bad_item_field_names_the_field_in_the_error() {
+    // The decoder must not swallow *why* a list response failed. Before
+    // shape-based dispatch, any such mismatch produced only "data did not
+    // match any variant of untagged enum PaginatedResponse", which named
+    // neither the field nor its position — unusable against a live cluster.
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1,
+            "results": [{ "id": "not-a-number", "name": "alice" }],
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client.users().list().await.unwrap_err().to_string();
+    assert!(
+        err.contains("users/"),
+        "error should name the endpoint: {err}"
+    );
+    assert!(
+        err.contains("expected u64") && err.contains("not-a-number"),
+        "error should describe the mismatch: {err}"
+    );
+    assert!(
+        !err.contains("did not match any variant"),
+        "error should not be the opaque untagged message: {err}"
+    );
+}
+
+#[tokio::test]
+async fn a_list_object_without_results_is_an_error_not_an_empty_page() {
+    // Decoding an unrecognized object to zero items would report "no
+    // users" for what is actually a protocol mismatch.
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "data": [{ "id": 1, "name": "alice" }],
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client.users().list().await.unwrap_err().to_string();
+    assert!(
+        err.contains("missing field `results`"),
+        "error should name `results`: {err}"
+    );
+}
+
+#[tokio::test]
 async fn users_create_access_key_posts_tenant_id() {
     let (server, client) = setup("t").await;
     Mock::given(method("POST"))

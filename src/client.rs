@@ -243,7 +243,11 @@ impl VastClient {
         let resp = self.request(method, path, query, body).await?;
         let status = resp.status();
         if status.is_success() {
-            Ok(resp.json().await?)
+            let bytes = resp.bytes().await?;
+            serde_json::from_slice(&bytes).map_err(|source| Error::Decode {
+                path: path.to_string(),
+                source,
+            })
         } else {
             Err(api_error(status.as_u16(), resp).await)
         }

@@ -19,6 +19,15 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// A successful (2xx) response whose body didn't match the shape this
+    /// client expects.
+    #[error("failed to decode the response from {path}: {source}")]
+    Decode {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
+
     /// Authentication failed or credentials were rejected.
     #[error("Authentication failed: {0}")]
     Auth(String),
