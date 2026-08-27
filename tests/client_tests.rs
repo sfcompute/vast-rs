@@ -187,6 +187,169 @@ async fn jwt_401_refreshes_credentials_and_replays_once() {
     server.verify().await;
 }
 
+// ---------------------------------------------------------------------------
+// API version
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn api_version_prefixes_every_request_path() {
+    // One list and one by-id call: the version has to land ahead of the
+    // resource, not replace it or sit after it.
+    let server = MockServer::start().await;
+    let client = VastClient::builder()
+        .address(server.uri())
+        .token("tok")
+        .api_version("v7")
+        .build()
+        .unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/api/v7/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v7/views/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 7 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client.clusters().list().await.unwrap();
+    assert_eq!(client.views().get(7).await.unwrap().id, 7);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn api_version_prefixes_the_token_endpoint() {
+    // The VMS serves the credential exchange under the version too, so the
+    // unversioned `/api/token/` is deliberately left unstubbed: a client that
+    // kept sending there would 404 and fail this test.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v7/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "jwt" })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v7/clusters/"))
+        .and(header("authorization", "Bearer jwt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    VastClient::builder()
+        .address(server.uri())
+        .credentials("admin", "secret")
+        .api_version("v7")
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap()
+        .clusters()
+        .list()
+        .await
+        .unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn api_version_prefixes_the_tenant_scoped_token_endpoint() {
+    // The tenant is pushed on as its own percent-encoded segment, which has to
+    // keep landing under the version.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v7/token/acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access": "tjwt" })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v7/volumes/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    VastClient::builder()
+        .address(server.uri())
+        .credentials("alice", "pw")
+        .tenant("acme")
+        .api_version("v7")
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap()
+        .volumes()
+        .list()
+        .await
+        .unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn blank_api_version_addresses_the_unversioned_routes() {
+    // A Kubernetes env var rendered from an absent value arrives as "", and
+    // must behave exactly as if the version were never configured.
+    let server = MockServer::start().await;
+    let client = VastClient::builder()
+        .address(server.uri())
+        .token("tok")
+        .api_version("")
+        .build()
+        .unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/api/clusters/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client.clusters().list().await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn api_version_carries_across_paginated_page_fetches() {
+    // Page 2 is fetched from a path the client builds itself, so the version
+    // has to survive the pagination loop and not just the first request.
+    let server = MockServer::start().await;
+    let client = VastClient::builder()
+        .address(server.uri())
+        .token("tok")
+        .api_version("v7")
+        .build()
+        .unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/api/v7/quotas/"))
+        .and(query_param_is_missing("page"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2,
+            "next": "https://vms.example.com/api/v7/quotas/?page=2",
+            "results": [{ "id": 1, "name": "a" }],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v7/quotas/"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2,
+            "next": Option::<String>::None,
+            "results": [{ "id": 2, "name": "b" }],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let quotas = client.quotas().list().await.unwrap();
+    assert_eq!(quotas.len(), 2);
+    server.verify().await;
+}
+
 #[tokio::test]
 async fn static_token_does_not_retry_on_401() {
     // Static API tokens don't expire mid-process, so retrying after a

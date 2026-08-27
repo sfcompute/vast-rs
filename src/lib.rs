@@ -44,6 +44,23 @@
 //! [`VastClient::from_env`] reads `VMS_ADDRESS` plus either `VMS_TOKEN` or
 //! `VMS_USER` + `VMS_PASSWORD` (and optional `VMS_TENANT`).
 //!
+//! ### Addressing a specific API version
+//!
+//! By default requests go to the unversioned routes — `/api/clusters/` — which a
+//! VMS resolves to its own current API version. [`Builder::api_version`] (or
+//! `VMS_API_VERSION`) addresses one explicitly instead, as the path segment it
+//! becomes: `/api/v7/clusters/`, the credential exchange included.
+//!
+//! ```rust,no_run
+//! # use vast::VastClient;
+//! let client = VastClient::builder()
+//!     .address("vms.example.com")
+//!     .token("tok")
+//!     .api_version("v7")
+//!     .build()?;
+//! # Ok::<_, vast::Error>(())
+//! ```
+//!
 //! ### A VMS with a private CA
 //!
 //! The client validates against the Mozilla root set compiled into the binary,
