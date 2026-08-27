@@ -41,7 +41,7 @@ async fn setup_credentials(
     let mut b = VastClient::builder()
         .address(server.uri())
         .credentials(user, pass)
-        .danger_accept_invalid_certs(true);
+        .danger_accept_invalid_certs(false);
     if let Some(t) = tenant {
         b = b.tenant(t);
     }
@@ -245,7 +245,7 @@ async fn api_version_prefixes_the_token_endpoint() {
         .address(server.uri())
         .credentials("admin", "secret")
         .api_version("v7")
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(false)
         .build()
         .unwrap()
         .clusters()
@@ -277,7 +277,7 @@ async fn api_version_prefixes_the_tenant_scoped_token_endpoint() {
         .credentials("alice", "pw")
         .tenant("acme")
         .api_version("v7")
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(false)
         .build()
         .unwrap()
         .volumes()
@@ -374,7 +374,7 @@ async fn setup_credentials_with_retry(server: &MockServer, max_attempts: u32) ->
     VastClient::builder()
         .address(server.uri())
         .credentials("alice", "pw")
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(false)
         .max_attempts(max_attempts)
         .retry_backoff(Duration::from_millis(1))
         .build()
