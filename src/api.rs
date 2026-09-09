@@ -410,6 +410,25 @@ macro_rules! crud {
             }
         }
     };
+    // Full CRUD minus `delete`: for resources whose DELETE takes extra
+    // parameters and so spells out its own `delete` in a separate `impl`.
+    (nodelete $Handle:ident, $Resource:ty, $Create:ty, $Update:ty, $path:expr
+     $(, filters = $Params:ty)?) => {
+        pub struct $Handle<'c>(pub(crate) &'c VastClient);
+        impl<'c> $Handle<'c> {
+            list_methods!($Resource, $path);
+            $( filtered_list_methods!($Resource, $Params, $path); )?
+            pub async fn get(&self, id: u64) -> Result<$Resource> {
+                self.0.get(&format!("{}{id}/", $path)).await
+            }
+            pub async fn create(&self, body: &$Create) -> Result<$Resource> {
+                self.0.post($path, body).await
+            }
+            pub async fn update(&self, id: u64, body: &$Update) -> Result<$Resource> {
+                self.0.patch(&format!("{}{id}/", $path), body).await
+            }
+        }
+    };
     // Create-only (no update): used for snapshots-style resources that don't update.
     (cd $Handle:ident, $Resource:ty, $Create:ty, $path:expr
      $(, filters = $Params:ty)?) => {
@@ -802,13 +821,24 @@ list_params! {
 }
 
 crud!(
-    Views,
+    nodelete Views,
     View,
     CreateView,
     UpdateView,
     "views/",
     filters = ListViewsParams
 );
+
+impl<'c> Views<'c> {
+    /// `DELETE /views/{id}/` — remove a view.
+    pub async fn delete(&self, id: u64, force: Option<bool>) -> Result<()> {
+        let path = format!("views/{id}/");
+        match force {
+            Some(force) => self.0.delete_with_query(&path, &[("force", force)]).await,
+            None => self.0.delete(&path).await,
+        }
+    }
+}
 
 // ===========================================================================
 // View policies

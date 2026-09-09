@@ -222,7 +222,9 @@ let view = client.views().create(&CreateView {
     s3_locks_retention_mode: None,
 }).await?;
 
-client.views().delete(view.id).await?;
+// `force` is the endpoint's optional `force` query parameter; `None` omits it.
+client.views().delete(view.id, None).await?;
+client.views().delete(view.id, Some(true)).await?;
 ```
 
 ### View Policies

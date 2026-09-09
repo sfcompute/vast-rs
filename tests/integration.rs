@@ -327,7 +327,7 @@ async fn views_crud() {
     // DELETE view record (does not remove the backing directory).
     client
         .views()
-        .delete(view_id)
+        .delete(view_id, None)
         .await
         .expect("views().delete() failed");
 
@@ -404,7 +404,7 @@ async fn quotas_crud() {
         .expect("bootstrap view create() failed");
     client
         .views()
-        .delete(bootstrap_view.id)
+        .delete(bootstrap_view.id, None)
         .await
         .expect("bootstrap view delete() failed");
 
