@@ -546,7 +546,7 @@ async fn expired_jwt_403_refreshes_on_non_idempotent_methods() {
     setup_credentials_with_retry(&server, 3)
         .await
         .views()
-        .delete(7)
+        .delete(7, None)
         .await
         .expect("DELETE should refresh and replay after a token-rejection 403");
 
@@ -847,6 +847,37 @@ async fn views_list_and_create() {
         .await
         .unwrap();
     assert_eq!(created.bucket, "x");
+}
+
+#[tokio::test]
+async fn views_delete_sends_force_query_param_only_when_set() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/views/1/"))
+        .and(query_param_is_missing("force"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/views/2/"))
+        .and(query_param("force", "true"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/views/3/"))
+        .and(query_param("force", "false"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client.views().delete(1, None).await.unwrap();
+    client.views().delete(2, Some(true)).await.unwrap();
+    client.views().delete(3, Some(false)).await.unwrap();
+    server.verify().await;
 }
 
 #[tokio::test]

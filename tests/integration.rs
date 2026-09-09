@@ -327,7 +327,7 @@ async fn views_crud() {
     // DELETE view record (does not remove the backing directory).
     client
         .views()
-        .delete(view_id)
+        .delete(view_id, None)
         .await
         .expect("views().delete() failed");
 

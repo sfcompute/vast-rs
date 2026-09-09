@@ -217,7 +217,17 @@ impl VastClient {
     }
 
     pub(crate) async fn delete(&self, path: &str) -> Result<()> {
-        self.send_no_body(Method::DELETE, path, None::<&()>).await
+        self.send_no_body(Method::DELETE, path, None::<&()>, None::<&()>)
+            .await
+    }
+
+    pub(crate) async fn delete_with_query<Q: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        query: &Q,
+    ) -> Result<()> {
+        self.send_no_body(Method::DELETE, path, Some(query), None::<&()>)
+            .await
     }
 
     pub(crate) async fn delete_with_body<B: Serialize + ?Sized>(
@@ -225,7 +235,8 @@ impl VastClient {
         path: &str,
         body: &B,
     ) -> Result<()> {
-        self.send_no_body(Method::DELETE, path, Some(body)).await
+        self.send_no_body(Method::DELETE, path, None::<&()>, Some(body))
+            .await
     }
 
     async fn send<T, Q, B>(
@@ -253,11 +264,18 @@ impl VastClient {
         }
     }
 
-    async fn send_no_body<B>(&self, method: Method, path: &str, body: Option<&B>) -> Result<()>
+    async fn send_no_body<Q, B>(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<&Q>,
+        body: Option<&B>,
+    ) -> Result<()>
     where
+        Q: Serialize + ?Sized,
         B: Serialize + ?Sized,
     {
-        let resp = self.request(method, path, None::<&()>, body).await?;
+        let resp = self.request(method, path, query, body).await?;
         if resp.status().is_success() {
             Ok(())
         } else {
