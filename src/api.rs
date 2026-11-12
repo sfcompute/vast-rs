@@ -34,6 +34,26 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
+/// Serde helper: read a byte count the VMS may report below zero, flooring it
+/// at 0. A quota's `used_capacity` has been seen negative for tens of seconds
+/// on a freshly created bucket, and bytes stored cannot be negative.
+fn non_negative<'de, D>(d: D) -> std::result::Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Count {
+        Unsigned(u64),
+        Signed(i64),
+    }
+    Ok(match Option::<Count>::deserialize(d)? {
+        Some(Count::Unsigned(n)) => n,
+        Some(Count::Signed(n)) => u64::try_from(n).unwrap_or(0),
+        None => 0,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Pagination
 // ---------------------------------------------------------------------------
@@ -927,6 +947,7 @@ pub struct Quota {
     pub state: String,
     pub hard_limit: Option<u64>,
     pub soft_limit: Option<u64>,
+    #[serde(deserialize_with = "non_negative")]
     pub used_capacity: u64,
     #[serde(flatten)]
     pub extra: Extra,

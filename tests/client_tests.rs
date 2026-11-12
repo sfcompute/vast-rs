@@ -1014,6 +1014,25 @@ async fn users_list_with_params_filters_by_name() {
 }
 
 #[tokio::test]
+async fn quotas_list_floors_negative_used_capacity_at_zero_and_keeps_large_ones() {
+    let (server, client) = setup("t").await;
+    Mock::given(method("GET"))
+        .and(path("/api/quotas/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 1, "name": "deleted-into", "path": "/a", "used_capacity": -86 },
+            { "id": 2, "name": "unset", "path": "/b", "used_capacity": null },
+            { "id": 3, "name": "beyond-i64", "path": "/c", "used_capacity": u64::MAX },
+        ])))
+        .mount(&server)
+        .await;
+
+    let quotas = client.quotas().list().await.unwrap();
+    assert_eq!(quotas[0].used_capacity, 0);
+    assert_eq!(quotas[1].used_capacity, 0);
+    assert_eq!(quotas[2].used_capacity, u64::MAX);
+}
+
+#[tokio::test]
 async fn quotas_list_with_params_filters_by_path() {
     use vast::api::ListQuotasParams;
     let (server, client) = setup("t").await;
